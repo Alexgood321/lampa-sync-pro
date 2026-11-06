@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.0-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.1-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -10,8 +10,10 @@
   } else if (win.plugin_lampa_sync_pro_ready) return;
   win.plugin_lampa_sync_pro_ready = true;
 
-  var L = win.Lampa;
-  var VERSION = '0.1.0-alpha';
+  var Lampa = win.Lampa;
+  var L = Lampa;
+  var VERSION = '0.1.1';
+  var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
   var STORE_KEY = 'lampa_sync_pro_local_v1';
@@ -659,6 +661,37 @@
       queued:state.outbox.length,device:state.deviceId,storage:storageMode,
       capture:option('capture',true),busy:networkBusy};
   }
+  // Native Lampa and My Store recognize plugin source by the real Lampa. API usage.
+  // Only update metadata of this own installation; never change other plugins.
+  function registerIdentity() {
+    if (!Lampa.Plugins || typeof Lampa.Plugins.get !== 'function') return;
+    try {
+      var installed = Lampa.Plugins.get() || [];
+      var changed = false;
+      for (var i = 0; i < installed.length; i++) {
+        var item = installed[i];
+        if (!item || !item.url) continue;
+        var url = String(item.url);
+        var githubRaw = /^https:\/\/raw\.githubusercontent\.com\/Alexgood321\/lampa-sync-pro\/[^/]+\/lampa-sync-pro\.js(?:[?#].*)?$/i.test(url);
+        var jsdelivr = /^https:\/\/cdn\.jsdelivr\.net\/gh\/Alexgood321\/lampa-sync-pro@[^/]+\/lampa-sync-pro\.js(?:[?#].*)?$/i.test(url);
+        var pages = /^https:\/\/Alexgood321\.github\.io\/lampa-sync-pro\/lampa-sync-pro\.js(?:[?#].*)?$/i.test(url);
+        if (!githubRaw && !jsdelivr && !pages) continue;
+        if (item.name !== 'Lampa Sync Pro') {
+          item.name = 'Lampa Sync Pro'; changed = true;
+        }
+        if (item.author !== 'Alexgood321') {
+          item.author = 'Alexgood321'; changed = true;
+        }
+        if (item.descr !== 'Синхронизация просмотра между устройствами (тестовая версия)') {
+          item.descr = 'Синхронизация просмотра между устройствами (тестовая версия)';
+          changed = true;
+        }
+      }
+      if (changed && typeof Lampa.Plugins.save === 'function') Lampa.Plugins.save();
+    } catch (e) {
+      // Plugin metadata is optional; sync functionality must remain available.
+    }
+  }
   function registerSettings() {
     if (!L.SettingsApi || !L.SettingsApi.addComponent) return;
     L.SettingsApi.addComponent({component:'lampa_sync_pro',name:'Lampa Sync Pro',
@@ -691,12 +724,17 @@
       if (!state.deviceId) state.deviceId=uuid();
       loaded=true;
       save();
+      registerIdentity();
       if (!state.deviceId) {
         note('Случайный идентификатор недоступен в этом WebView');
         return;
       }
       registerSettings();
       installCapture();
+      win.__AlexgoodPluginRuntime = win.__AlexgoodPluginRuntime || {};
+      win.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js'] = {
+        ready: true, version: VERSION, channel: CHANNEL, started_at: Date.now()
+      };
       subscribe(L.Listener,'full',visibleCard);
       if (state.auth) sync(false);
       interval=setInterval(function(){sync(false);},120000);
@@ -715,6 +753,10 @@
     subscriptions=[];
     if (win.removeEventListener) win.removeEventListener('online',onOnline);
     if (db) {try{db.close();}catch(ignore){}}
+    if (win.__AlexgoodPluginRuntime &&
+        win.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js']) {
+      win.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js'].ready=false;
+    }
     win.plugin_lampa_sync_pro_ready=false;
     win.plugin_lampa_sync_pro_destroy=null;
   }
