@@ -18,6 +18,9 @@ function runPluginTests(source) {
   var settings={}, stored={}, notices=[], requests=[], serverEvents=[], serverRevision=0;
   var randomSeq=0, isOnline=true, prompts=['test@example.org','test-secret-password'];
   var local={};
+  var installed=[{url:'https://raw.githubusercontent.com/Alexgood321/lampa-sync-pro/main/lampa-sync-pro.js',
+    status:1}];
+  var savedPluginMetadata=0;
   var fakeWindow={
     appready:true,
     crypto:{getRandomValues:function(a){randomSeq++;for(var i=0;i<a.length;i++)a[i]=(i*31+randomSeq*17)&255;return a;}},
@@ -28,6 +31,10 @@ function runPluginTests(source) {
     addEventListener:function(){},removeEventListener:function(){},
     Lampa:{
       Listener:listener,
+      Plugins:{
+        get:function(){return installed;},
+        save:function(){savedPluginMetadata++;}
+      },
       Player:{listener:playerListener},
       PlayerVideo:{listener:videoListener},
       Timeline:{listener:timelineListener},
@@ -83,7 +90,14 @@ function runPluginTests(source) {
   function delay(fn){timeoutId++;return timeoutId;}
   new Function('window','XMLHttpRequest','setTimeout','clearTimeout','setInterval','clearInterval',
     source)(fakeWindow,FakeXHR,delay,function(){},delay,function(){});
+  check(source.indexOf('Lampa.')!==-1,'native Lampa source recognizer marker');
   check(fakeWindow.plugin_lampa_sync_pro_ready===true,'plugin initialized');
+  check(installed[0].name==='Lampa Sync Pro' && installed[0].author==='Alexgood321',
+    'installed entry identified by plugin itself');
+  check(savedPluginMetadata===1,'metadata persisted once, without version churn');
+  check(fakeWindow.__AlexgoodPluginRuntime &&
+    fakeWindow.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js'].ready===true,
+    'running version registered only on successful boot');
   check(fakeWindow.LampaSyncPro.status().ready===true,'storage bootstrap finished');
   check(!!fakeWindow.LampaSyncPro.status().device,'device generated with crypto RNG');
   check(settings.lsp_login && settings.lsp_sync_now && settings.lsp_logout,
@@ -133,6 +147,8 @@ function runPluginTests(source) {
   check(!JSON.stringify(local).includes('dummy_refresh'),'logout removes refresh token');
   fakeWindow.LampaSyncPro.destroy();
   check(fakeWindow.plugin_lampa_sync_pro_ready===false,'clean destroy');
+  check(fakeWindow.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js'].ready===false,
+    'running version invalidated on unload');
   return {passed:passed,events:serverEvents.length,revision:serverRevision,
     networkRequests:requests.length};
 }
