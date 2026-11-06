@@ -2,7 +2,14 @@
 
 Этот каталог зарезервирован для версионируемых SQL-миграций, RLS-политик и тестов базы данных.
 
-**Ни одной миграции пока не применено.**
+**Применены две миграции** к отдельному Supabase-проекту `kkrmivgrnfqauvplccqm`:
+
+- [`20261106232355_lsp_sync_v1_initial.sql`](migrations/20261106232355_lsp_sync_v1_initial.sql)
+- [`20261106232634_lsp_sync_v1_hardening.sql`](migrations/20261106232634_lsp_sync_v1_hardening.sql)
+
+6 таблиц в `public`, RLS для владельца, транзакционный writer в `lsp_private`, четыре RPC для клиента. Схема проверена тестами в [`tests/supabase_smoke.sql`](../tests/supabase_smoke.sql) (15/15 утверждений, rollback). Security/Performance Advisors не выявили замечаний. Рабочий JS-плагин и реальные Auth-сессии устройств пока отсутствуют.
+
+[Актуальный контракт API](../docs/API_V1.md).
 
 Порядок будущего развёртывания:
 
