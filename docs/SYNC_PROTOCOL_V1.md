@@ -1,6 +1,6 @@
 # Протокол синхронизации v1 — Lampa Sync Pro
 
-**Состояние:** спецификация, API/таблицы ещё не развёрнуты. Опирается на [аудит](SOURCE_AUDIT.md).
+**Состояние:** спецификация v1, серверные таблицы и RPC реализованы. [Точные параметры опубликованного API](API_V1.md). Клиент и реальный E2E ещё не реализованы. Опирается на [аудит](SOURCE_AUDIT.md).
 
 ## 1. Главные инварианты
 
@@ -47,7 +47,7 @@
 | `resume_pointers` | Последний подтверждённый источник и эпизод карточки | `user_id + media_key` |
 | `sync_events` | Журнал изменений, идемпотентность и удаления | `user_id + event_id` unique |
 
-Везде обязательны `user_id UUID`, `server_revision BIGINT` и `updated_at TIMESTAMPTZ` **со стороны сервера**. Для `source_progress` допустима дополнительная `playback_session_id UUID`, для `sync_events` — `device_seq BIGINT` и `base_revision BIGINT`. Реальная SQL-схема будет миграцией следующего этапа.
+Везде обязательны `user_id UUID`, `server_revision BIGINT` и `updated_at TIMESTAMPTZ` **со стороны сервера**. Для `source_progress` допустима дополнительная `playback_session_id UUID`, для `sync_events` — `device_seq BIGINT` и `base_revision BIGINT`. Реальная SQL-схема зафиксирована в [миграциях Supabase](../supabase/migrations/).
 
 ## 4. Логические операции API
 
