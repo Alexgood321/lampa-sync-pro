@@ -20,6 +20,7 @@
   var subscriptions = [], interval = null, sendTimer = null;
   var networkBusy = false, refreshing = false, refreshWaiters = [];
   var retryAfter = 0, active = null, staged = null, currentFull = null;
+  var resumeOverrides = {};
   var state = { schema: 1, userId: '', auth: null, deviceId: '', seq: 0,
     revision: 0, snapshot: null, outbox: [] };
 
@@ -247,7 +248,10 @@
   }
   function sourceFrom(data, fallback) {
     var a = data || {}, b = fallback || {};
-    var hash = str(a.torrent_hash || a.infohash || b.torrent_hash || b.infohash).toUpperCase();
+    var ownHash = str(a.torrent_hash || a.infohash).toUpperCase();
+    var fallbackHash = str(b.torrent_hash || b.infohash).toUpperCase();
+    if (ownHash && fallbackHash && ownHash!==fallbackHash) return null;
+    var hash = ownHash || fallbackHash;
     var index = a.file_index != null ? a.file_index : (a.id != null ? a.id :
       (b.file_index != null ? b.file_index : b.id));
     var path = str(a.file_path || a.path || b.file_path || b.path);
@@ -314,7 +318,8 @@
     newEvent(ctx,kind);
   }
   function updateProgress(e) {
-    if (!active || !active.confirmed || active.external || !e) return;
+    if (!active || !active.confirmed || active.external || !e ||
+        (e.current==null && e.time==null)) return;
     var p = number(e.current != null ? e.current : e.time);
     var dur = number(e.duration);
     if (p < 0 || p > 86400 || dur < 0 || dur > 86400) return;
@@ -334,7 +339,9 @@
     if (!active || !active.session_id || active.confirmed) return;
     var d = data || {};
     if (d.url && staged && staged.file && staged.file.url &&
-        d.url !== staged.file.url && Date.now()-staged.at<100000) {
+        d.url !== staged.file.url &&
+        str(d.url).toUpperCase().indexOf(active.recipe.infohash) < 0 &&
+        Date.now()-staged.at<100000) {
       active = null;
       return;
     }
@@ -379,6 +386,7 @@
         if (!active || !active.confirmed || !e || !e.data) return;
         if (!active.timeline_hash || str(e.data.hash)!==active.timeline_hash) return;
         var road = e.data.road || {};
+        if (road.time==null) return;
         var p = number(road.time), dur = number(road.duration);
         if (p<0 || p>86400 || dur<0 || dur>86400) return;
         active.position = Math.round(p);
@@ -394,6 +402,7 @@
   function applyRemote(snapshot) {
     if (!snapshot || snapshot.status!=='ok') return;
     state.snapshot = snapshot;
+    resumeOverrides = {};
     state.revision = Math.max(0,Math.floor(number(snapshot.revision)));
     save();
     if (currentFull) updateFull(currentFull);
@@ -404,23 +413,26 @@
       if (state.outbox[i].base_revision === startAt) state.outbox[i].base_revision = revision;
     }
   }
-  function readSnapshot(done) {
+  function readSnapshot(done,owner) {
     rpc('lsp_sync_snapshot',{},function(err,data) {
+      if (owner !== state.userId) return done(new Error('account_changed'));
       if (!err && data && data.status==='ok') applyRemote(data);
       done(err,data);
     });
   }
-  function flushQueue(done) {
+  function flushQueue(done,owner) {
+    if (owner !== state.userId) return done(new Error('account_changed'));
     if (!state.outbox.length) return done(null);
     var batch = state.outbox.slice(0,50);
     var base = state.revision;
     rpc('lsp_sync_push',{p_events:batch,p_expected_revision:base},function(err,data) {
+      if (owner !== state.userId) return done(new Error('account_changed'));
       if (err) return done(err);
       if (!data) return done(new Error('empty_push_response'));
       if (data.status==='conflict') {
         state.revision = Math.max(0,Math.floor(number(data.revision)));
         save();
-        return flushQueue(done); // A stale base_revision is intentionally NOT rebased here.
+        return flushQueue(done,owner); // A stale base_revision is intentionally NOT rebased here.
       }
       if (data.status!=='ok') return done(new Error('unexpected_push_response'));
       if (number(data.ignored)>0) note('Часть устаревших изменений пропущена: ' + data.ignored);
@@ -428,7 +440,7 @@
       state.revision = Math.max(0,Math.floor(number(data.revision)));
       rebaseRemainder(base,state.revision);
       save();
-      flushQueue(done);
+      flushQueue(done,owner);
     });
   }
   function sync(userInitiated) {
@@ -442,13 +454,14 @@
     }
     if (!userInitiated && Date.now()<retryAfter) return;
     networkBusy = true;
+    var owner = state.userId;
     readSnapshot(function(error) {
       if (error) return finish(error);
       flushQueue(function(err) {
         if (err) return finish(err);
-        readSnapshot(function(last) { finish(last); });
-      });
-    });
+        readSnapshot(function(last) { finish(last); },owner);
+      },owner);
+    },owner);
     function finish(err) {
       networkBusy = false;
       if (err) {
@@ -461,6 +474,7 @@
     }
   }
   function findCachedResume(key) {
+    if (Object.prototype.hasOwnProperty.call(resumeOverrides,key)) return resumeOverrides[key];
     var snapshot = state.snapshot || {};
     var pointers = snapshot.resume_pointers || [], sources = snapshot.source_progress || [];
     var states = snapshot.watch_state || [];
@@ -528,23 +542,10 @@
     var card=e.data && e.data.movie;
     var key=mediaKey(card);
     if (!key || !state.auth || networkBusy) return;
+    var owner=state.userId;
     rpc('lsp_get_resume',{p_media_key:key},function(err,rec) {
-      if (err || STOPPED || currentFull!==e || !rec) return;
-      if (!state.snapshot) state.snapshot={status:'ok',revision:state.revision,
-        resume_pointers:[],source_progress:[],watch_state:[]};
-      var s=state.snapshot, i;
-      s.resume_pointers=(s.resume_pointers||[]).filter(function(p){return p.media_key!==key;});
-      s.source_progress=(s.source_progress||[]).filter(function(p){return p.media_key!==key;});
-      s.watch_state=(s.watch_state||[]).filter(function(p){return p.media_key!==key;});
-      s.resume_pointers.push({media_key:key,episode_key:rec.episode_key,
-        source_key:rec.source_key,updated_revision:rec.revision});
-      s.source_progress.push({media_key:key,episode_key:rec.episode_key,
-        source_key:rec.source_key,source_kind:rec.source_kind,
-        source_recipe:rec.source_recipe,position_seconds:rec.position_seconds,
-        duration_seconds:rec.duration_seconds,deleted:false});
-      s.watch_state.push({media_key:key,episode_key:rec.episode_key,
-        state:rec.watched_state||'in_progress'});
-      save();
+      if (err || STOPPED || owner!==state.userId || currentFull!==e) return;
+      resumeOverrides[key]=rec || null;
       updateFull(e);
     });
   }
