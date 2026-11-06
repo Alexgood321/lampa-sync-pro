@@ -2,12 +2,13 @@
 
 Этот каталог зарезервирован для версионируемых SQL-миграций, RLS-политик и тестов базы данных.
 
-**Применены две миграции** к отдельному Supabase-проекту `kkrmivgrnfqauvplccqm`:
+**Применены три миграции** к отдельному Supabase-проекту `kkrmivgrnfqauvplccqm`:
 
 - [`20261106232355_lsp_sync_v1_initial.sql`](migrations/20261106232355_lsp_sync_v1_initial.sql)
 - [`20261106232634_lsp_sync_v1_hardening.sql`](migrations/20261106232634_lsp_sync_v1_hardening.sql)
+- [`20261106233416_lsp_sync_v1_reset_resume_consistency.sql`](migrations/20261106233416_lsp_sync_v1_reset_resume_consistency.sql)
 
-6 таблиц в `public`, RLS для владельца, транзакционный writer в `lsp_private`, четыре RPC для клиента. Схема проверена тестами в [`tests/supabase_smoke.sql`](../tests/supabase_smoke.sql) (15/15 утверждений, rollback). Security/Performance Advisors не выявили замечаний. Рабочий JS-плагин и реальные Auth-сессии устройств пока отсутствуют.
+6 таблиц в `public`, RLS для владельца, транзакционный writer в `lsp_private`, четыре RPC для клиента. Схема проверена SQL-тестами: [`tests/supabase_smoke.sql`](../tests/supabase_smoke.sql) (15) и [`tests/supabase_reset_smoke.sql`](../tests/supabase_reset_smoke.sql) (4). Все тестовые данные откатились. Рабочий JS-клиент альфа доступен, реальный E2E Auth/CORS на устройствах ещё не проводился.
 
 [Актуальный контракт API](../docs/API_V1.md).
 
