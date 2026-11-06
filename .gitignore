@@ -1,0 +1,31 @@
+# Supabase and other credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.*
+!secrets.example.*
+
+# Local data and backups
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.log
+*.bak
+*.backup
+*.dump
+*.sql.gz
+backups/
+data/
+
+# Tooling and builds
+node_modules/
+dist/
+coverage/
+.DS_Store
+.idea/
+.vscode/
