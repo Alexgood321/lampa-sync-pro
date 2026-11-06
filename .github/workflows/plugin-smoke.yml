@@ -1,0 +1,32 @@
+name: Lampa Sync Pro · plugin smoke
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lampa-sync-pro.js'
+      - 'tests/*.js'
+      - '.github/workflows/plugin-smoke.yml'
+  pull_request:
+    paths:
+      - 'lampa-sync-pro.js'
+      - 'tests/*.js'
+      - '.github/workflows/plugin-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax
+        run: node --check lampa-sync-pro.js
+      - name: Auth / offline / capture
+        run: node tests/plugin_smoke.js
+      - name: Cloud card and TorrServer resume
+        run: node tests/resume_smoke.js
