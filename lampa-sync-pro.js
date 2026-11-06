@@ -407,11 +407,20 @@
     save();
     if (currentFull) updateFull(currentFull);
   }
-  function rebaseRemainder(startAt,revision) {
-    // Only events captured after the acknowledged batch are locally rebased.
-    for (var i=0;i<state.outbox.length;i++) {
-      if (state.outbox[i].base_revision === startAt) state.outbox[i].base_revision = revision;
-    }
+  function rebaseRemainder(startAt,revision,acknowledged,ignored) {
+    // Do NOT rebase events from a different media/session or after a stale write:
+    // otherwise an offline queue could overwrite newer progress from another device.
+    if (ignored) return;
+    var sessions = {};
+    acknowledged.forEach(function(e) {
+      if (e.playback_session_id) {
+        sessions[e.media_key + '|' + e.episode_key + '|' + e.playback_session_id] = true;
+      }
+    });
+    state.outbox.forEach(function(e) {
+      var key = e.media_key + '|' + e.episode_key + '|' + e.playback_session_id;
+      if (e.base_revision === startAt && sessions[key]) e.base_revision = revision;
+    });
   }
   function readSnapshot(done,owner) {
     rpc('lsp_sync_snapshot',{},function(err,data) {
@@ -438,7 +447,7 @@
       if (number(data.ignored)>0) note('Часть устаревших изменений пропущена: ' + data.ignored);
       state.outbox.splice(0,batch.length);
       state.revision = Math.max(0,Math.floor(number(data.revision)));
-      rebaseRemainder(base,state.revision);
+      rebaseRemainder(base,state.revision,batch,number(data.ignored));
       save();
       flushQueue(done,owner);
     });
