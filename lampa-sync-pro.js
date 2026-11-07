@@ -296,11 +296,12 @@
     var d = data || {};
     if (d.card) return d.card;
     if (d.movie) return d.movie;
-    if (staged && staged.card && Date.now() - staged.at < 100000) return staged.card;
+    if (d.isonline!==true && staged && staged.card && Date.now()-staged.at<100000) return staged.card;
     if (L.Activity && typeof L.Activity.active==='function') {
       var current=L.Activity.active() || {};
       if (current.movie || current.card) return current.movie || current.card;
     }
+    if (staged && staged.card && Date.now()-staged.at<100000) return staged.card;
     return null;
   }
   function nativeOnlineRecipe(data,card) {
@@ -715,6 +716,7 @@
       }
       rtJoinCatchup=false;
       realtimeDrain();
+      if (!err && state.outbox.length && !STOPPED) scheduleSync();
     }
   }
   function realtimeAllowed() {
@@ -985,6 +987,71 @@
     if(!event.event_id)return false;
     state.outbox.push(event);save();notifyState();scheduleSync();
     return true;
+  }
+  function importLegacyHistory() {
+    if(!loaded || !state.auth)return note('Сначала войдите в Lampa Sync Pro');
+    if(!L.Storage || typeof L.Storage.get!=='function')
+      return note('Хранилище Lampa недоступно');
+    var history;
+    try{history=L.Storage.get('lampac_resume_history_v1',null);}
+    catch(ignore){history=null;}
+    if(typeof history==='string'){
+      try{history=JSON.parse(history);}catch(ignore){history=null;}
+    }
+    if(!history || Number(history.schema)!==1 || !history.cards ||
+      typeof history.cards!=='object' || Array.isArray(history.cards))
+      return note('История «Продолжить просмотр» не найдена');
+    var count=0, scanned=0, existing={};
+    var snap=state.snapshot || {};
+    (snap.resume_pointers||[]).forEach(function(x){existing[x.media_key]=true;});
+    (snap.watch_state||[]).forEach(function(x){existing[x.media_key]=true;});
+    state.outbox.forEach(function(x){existing[x.media_key]=true;});
+    Object.keys(history.cards).slice(0,1000).forEach(function(k){
+      if(count>=50)return;
+      var entry=history.cards[k] || {}, aliases=entry.aliases || [];
+      if(!Array.isArray(aliases))return;
+      var media='';
+      aliases.some(function(a){if(/^tmdb:\d{1,12}$/.test(a)){media='tmdb:tv:'+a.slice(5);return true;}return false;});
+      if(!media)aliases.some(function(a){if(/^imdb:tt\d{1,12}$/.test(a)){media=a;return true;}return false;});
+      if(!media)aliases.some(function(a){if(/^kinopoisk:\d{1,12}$/.test(a)){media=a;return true;}return false;});
+      if(!media || existing[media])return;
+      var modes=entry.modes || {}, candidates=[];
+      ['torrent','online'].forEach(function(mode){
+        var x=modes[mode];
+        if(!x || !x.episode || Number(x.episode.episode)<1 || Number(x.episode.season)<0)return;
+        candidates.push(x);
+      });
+      if(!candidates.length)return;
+      candidates.sort(function(a,b){return number(b.updated_at)-number(a.updated_at);});
+      var item=candidates[0], ep='s'+Math.floor(number(item.episode.season))+':e'+
+        Math.floor(number(item.episode.episode));
+      if(!/^s\d{1,3}:e\d{1,4}$/.test(ep))return;
+      var recipe=null, kind='';
+      if(item.mode==='torrent'){
+        recipe=sourceFrom(item.torrent || {},{});
+        kind='torrent';
+      } else if(item.mode==='online'){
+        var alias=aliases.filter(function(x){return /^tmdb:\d/.test(x);})[0] || '';
+        recipe=nativeOnlineRecipe({lampac_resume:{mode:'online',online:item.online||{}}},
+          {id:Number(alias.slice(5)) || 0});
+        kind='lampac';
+      }
+      if(!recipe || !uuid())return;
+      var progress=item.progress || {},seconds=Math.floor(number(progress.time)),
+        duration=Math.floor(number(progress.duration));
+      if(seconds<0 || seconds>86400 || duration<0 || duration>86400)return;
+      if(duration>0 && seconds>duration+30)seconds=duration;
+      var ctx={media_key:media,episode_key:ep,source_kind:kind,recipe:recipe,
+        session_id:uuid(),position:seconds,duration:duration};
+      if(!ctx.session_id)return;
+      newEvent(ctx,'started');
+      if(number(progress.percent)>=90 && duration>=60 && seconds>0)
+        newEvent(ctx,'completed');
+      existing[media]=true;
+      count++;scanned++;
+    });
+    if(!count)return note('Новых записей для импорта нет');
+    note('Добавлено в очередь '+count+' записей. История ARST сохранена');
   }
   function findCachedResume(key) {
     if (Object.prototype.hasOwnProperty.call(resumeOverrides,key)) return resumeOverrides[key];
@@ -1300,6 +1367,9 @@
     button('lsp_login','Войти','Email и пароль Supabase Auth',function(){login(false);});
     button('lsp_register','Зарегистрироваться','При включённой проверке email придёт письмо',function(){login(true);});
     button('lsp_sync_now','Синхронизировать сейчас','Загрузить изменения и отправить очередь',function(){sync(true);});
+    button('lsp_import_legacy','Импортировать историю «Продолжить»',
+      'Перенести только отсутствующие в облаке записи ARST без удаления исходных данных',
+      importLegacyHistory);
     button('lsp_torrserver_check','Проверить таймкод TorrServer',
       'Считать /viewed последнего воспроизведённого торрента',function() {
         if (!lastTorrent || state.userId!==lastTorrent.owner)
@@ -1396,7 +1466,8 @@
   win.plugin_lampa_sync_pro_destroy=destroy;
   win.LampaSyncPro={status:status,sync:function(){sync(true);},destroy:destroy,
     getResume:function(card){return findCachedResume(typeof card==='string'?card:mediaKey(card));},
-    getEpisodeState:getEpisodeState,markEpisode:markEpisode,onChange:onStateChange};
+    getEpisodeState:getEpisodeState,markEpisode:markEpisode,onChange:onStateChange,
+    importLegacy:importLegacyHistory};
   if (win.appready) boot();
   else subscribe(L.Listener,'app',function(e){if(e && e.type==='ready')boot();});
 })(typeof window==='undefined' ? null : window);
