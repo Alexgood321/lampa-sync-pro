@@ -467,6 +467,8 @@ function runResumeSmoke(source) {
   assert(fastFilesRequests===2 && openedTorrents.length===beforeFallback+1,
     'template failure falls back to original native picker');
   assert(fastOpened.length===beforeFastModal,'template failure opens no blank custom modal');
+  assert(button.hasClass('lsp-resume-loading'),'native fallback retains spinner until modal becomes visible');
+  nativeListShown();
   win.Lampa.Template.get=previousTemplate;
   // A failure during Modal.update must close the partially created modal
   // before invoking the compatibility path, never stack two dialogs.
@@ -478,6 +480,7 @@ function runResumeSmoke(source) {
     'modal-render failure closes fast window and restores native picker');
   assert(fastEvents.filter(function(x){return x==='list_close';}).length===prevEventCount+1,
     'exceptional fast window closes NUM list state');
+  nativeListShown();
   win.Lampa.Modal.update=priorUpdate;
   // Prefetch metadata while the card is visible, before the first click.
   // This prevents waiting for network roundtrip on normal repeat openings.
