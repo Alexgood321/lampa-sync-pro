@@ -234,6 +234,7 @@
   }
   function logout() {
     realtimeStop();
+    stopOnlineResume();
     clearTorrPoll();
     lastTorrent=null;
     var oldJwt = state.auth && state.auth.access_token;
@@ -1001,7 +1002,7 @@
     if(!history || Number(history.schema)!==1 || !history.cards ||
       typeof history.cards!=='object' || Array.isArray(history.cards))
       return note('История «Продолжить просмотр» не найдена');
-    var count=0, scanned=0, existing={};
+    var count=0, existing={};
     var snap=state.snapshot || {};
     (snap.resume_pointers||[]).forEach(function(x){existing[x.media_key]=true;});
     (snap.watch_state||[]).forEach(function(x){existing[x.media_key]=true;});
@@ -1036,7 +1037,7 @@
           {id:Number(alias.slice(5)) || 0});
         kind='lampac';
       }
-      if(!recipe || !uuid())return;
+      if(!recipe)return;
       var progress=item.progress || {},seconds=Math.floor(number(progress.time)),
         duration=Math.floor(number(progress.duration));
       if(seconds<0 || seconds>86400 || duration<0 || duration>86400)return;
@@ -1048,7 +1049,7 @@
       if(number(progress.percent)>=90 && duration>=60 && seconds>0)
         newEvent(ctx,'completed');
       existing[media]=true;
-      count++;scanned++;
+      count++;
     });
     if(!count)return note('Новых записей для импорта нет');
     note('Добавлено в очередь '+count+' записей. История ARST сохранена');
@@ -1185,6 +1186,10 @@
       var current=L.Activity.active() || {};
       if(current.component!=='lampac' || !current.activity ||
         typeof current.activity.render!=='function')return;
+      var shown=current.movie || current.card ||
+        current.activity.movie || current.activity.card;
+      if(shown && mediaKey(shown) && mediaKey(card) && mediaKey(shown)!==mediaKey(card))
+        return; // Never resume an unrelated show's episode from a stale online view.
       var panel=current.activity.render();
       if(!panel || typeof panel.find!=='function')panel=win.$(panel);
       if(!panel || typeof panel.find!=='function')return;
