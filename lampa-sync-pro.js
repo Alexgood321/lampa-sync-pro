@@ -30,7 +30,7 @@
   var rtJoined=false, rtStarting=false, rtState='disconnected', rtAttempt=0;
   var rtSubscriptions=[], rtHeartbeat=null, rtPingRef='', rtPingAt=0;
   var rtJoinTimeout=null, rtReconnect=null, rtAuthTimer=null, rtPullTimer=null;
-  var rtPendingRevision=0, rtLastEventAt=0;
+  var rtPendingRevision=0, rtLastEventAt=0, rtJoinCatchup=false;
   var state = { schema: 1, userId: '', auth: null, deviceId: '', seq: 0,
     revision: 0, snapshot: null, outbox: [], lastTorrent: null };
 
@@ -673,6 +673,11 @@
         lastSuccessfulSync = Date.now();
         if (userInitiated) note('Синхронизировано. Ревизия ' + state.revision);
       }
+      if (rtJoinCatchup && rtJoined && !STOPPED && !err) {
+        rtJoinCatchup=false;
+        return sync(false);
+      }
+      rtJoinCatchup=false;
       realtimeDrain();
     }
   }
@@ -702,6 +707,7 @@
     rtPingRef='';
     rtPingAt=0;
     rtPendingRevision=0;
+    rtJoinCatchup=false;
     rtAttempt=0;
     rtState='disconnected';
     if (socket) {
@@ -821,8 +827,12 @@
       rtJoinTimeout=null;
       realtimeHeartbeatStart(socket);
       realtimeAuthSchedule();
-      // Close the gap between the previous HTTP snapshot and channel subscription.
-      if (!networkBusy) sync(false);
+      // Always fill the HTTP -> subscription gap, even if an older sync is in flight.
+      rtJoinCatchup=true;
+      if (!networkBusy) {
+        rtJoinCatchup=false;
+        sync(false);
+      }
       return;
     }
     if (msg.event==='phx_error' || msg.event==='phx_close') return realtimeDrop(socket);
