@@ -166,8 +166,28 @@ function runRealtimeSmoke(source) {
   ok(pushes.length===1 && pushes[0].kind==='started','play action immediately flushes via RPC');
   ok(win.LampaSyncPro.status().queued===0,'action queue flushed');
   ok(win.LampaSyncPro.status().revision===2,'own revision committed');
-  notify(ws,account,2);
-  ok(win.LampaSyncPro.status().revision===2,'self event does not fetch again');
+
+  ok(win.LampaSyncPro.markEpisode('tmdb:tv:288673','s1:e2',true),
+    'NUM queues an authenticated completion');
+  ok(win.LampaSyncPro.getEpisodeState('tmdb:tv:288673','s1:e2').state==='completed',
+    'NUM sees pending completion instantly');
+  fireLater(1800);
+  ok(pushes.length===2 && pushes[1].kind==='marked_complete',
+    'manual completion sent through protected RPC queue');
+  ok(win.LampaSyncPro.status().revision===3,'manual completion increments revision');
+  ok(win.LampaSyncPro.markEpisode('tmdb:tv:288673','s1:e2',false),
+    'NUM queues a manual reset');
+  ok(win.LampaSyncPro.getEpisodeState('tmdb:tv:288673','s1:e2').state==='reset',
+    'pending reset has precedence');
+  fireLater(1800);
+  ok(pushes.length===3 && pushes[2].kind==='marked_unwatched',
+    'manual reset sent through protected RPC queue');
+  ok(!win.LampaSyncPro.markEpisode('tmdb:tv:invalid','s1:e2',true) &&
+    !win.LampaSyncPro.markEpisode('tmdb:tv:288673','s1:e0',true),
+    'invalid media and episode identities rejected');
+
+  notify(ws,account,4);
+  ok(win.LampaSyncPro.status().revision===4,'self event does not fetch again');
   // Unexpected close re-establishes the socket with exponential backoff.
   ws.breakConnection();
   ok(win.LampaSyncPro.status().realtime==='reconnecting','close schedules reconnect');
@@ -177,11 +197,11 @@ function runRealtimeSmoke(source) {
   second.open();
   var join2=latestJoin(second);
   ok(join2.payload.config.postgres_changes.length===1,'subscription restored');
-  cloudRevision=3;
+  cloudRevision=5;
   var beforeRejoin=snapCount();
   ackJoin(second);
   ok(snapCount()===beforeRejoin+2,'reconnect fills missed revision');
-  ok(win.LampaSyncPro.status().revision===3,'lost offline changes restored');
+  ok(win.LampaSyncPro.status().revision===5,'lost offline changes restored');
   // Renew JWT while socket remains connected.
   var refreshTimer=timers.filter(function(x){return x.active&&x.ms>1000000;})[0];
   ok(!!refreshTimer,'JWT refresh timer scheduled');
