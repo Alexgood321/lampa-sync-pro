@@ -1,4 +1,4 @@
-# Lampa Sync Pro: событийная синхронизация (0.1.6-alpha)
+# Lampa Sync Pro: событийная синхронизация (0.1.7-alpha)
 
 ## Принцип работы
 
@@ -27,4 +27,4 @@ NUM Series Pro 2.0.7 использует API Sync Pro для облачных �
 
 Клиент: вернуть предыдущий закреплённый URL `https://cdn.jsdelivr.net/gh/Alexgood321/lampa-sync-pro@7f0aa6e38ab13672a43800bcedddf1a99ff860d0/lampa-sync-pro.js` (версия 0.1.4-alpha). Схему БД для этого менять не требуется: публикация `lsp_sync_heads` не влияет на старого REST-клиента.
 
-При необходимости отказаться от Realtime на сервере: `ALTER PUBLICATION supabase_realtime DROP TABLE public.lsp_sync_heads;`. Перед этим убедиться, что больше нет клиентов 0.1.5/0.1.6, которым нужны push-уведомления.
+При необходимости отказаться от Realtime на сервере: `ALTER PUBLICATION supabase_realtime DROP TABLE public.lsp_sync_heads;`. Перед этим убедиться, что больше нет клиентов 0.1.5/0.1.6/0.1.7, которым нужны push-уведомления.
