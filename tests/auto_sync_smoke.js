@@ -68,8 +68,8 @@ function runAutoSyncSmoke(source) {
   new Function('window','XMLHttpRequest','setTimeout','clearTimeout',
     'setInterval','clearInterval','Date',source)(win,Xhr,function(){return 1;},function(){},
     setFakeInterval,function(){},FakeDate);
-  check(intervals.length===1 && intervals[0].delay===60000,
-    'cloud polling runs every 60 seconds');
+  check(intervals.length===1 && intervals[0].delay===30000,
+    'cloud polling runs every 30 seconds');
   check(events.size('focus')===1 && events.size('pageshow')===1,
     'window foreground hooks registered');
   check(documentEvents.size('visibilitychange')===1,'visibility hook registered');
@@ -95,9 +95,14 @@ function runAutoSyncSmoke(source) {
   document.visibilityState='visible';
   documentEvents.fire('visibilitychange');
   check(snaps()===6,'visible transition refreshes cloud');
-  now+=60000;
+  now+=30000;
   intervals[0].fn();
-  check(snaps()===8,'automatic minute refresh works');
+  check(snaps()===8,'automatic 30-second refresh works');
+  document.visibilityState='hidden';
+  now+=30000;
+  intervals[0].fn();
+  check(snaps()===8,'periodic cloud refresh pauses in background');
+  document.visibilityState='visible';
   win.LampaSyncPro.destroy();
   check(events.size('focus')===0 && events.size('pageshow')===0,
     'window event listeners cleaned up');
