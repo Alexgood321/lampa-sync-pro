@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.6-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.7-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.6';
+  var VERSION = '0.1.7';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1105,19 +1105,29 @@
     root.find('.view--lsp-resume').remove();
     var rec=findCachedResume(key);
     if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) return;
-    var button=win.$('<div class="full-start__button selector view--lsp-resume"></div>');
-    button.text(labelResume(rec));
+    // Lampa "Play" opens a source picker. Its hidden .buttons--container
+    // must never receive our resume action: only the visible card toolbar.
+    var toolbar=root.find('.full-start-new__buttons').last();
+    if (!toolbar.length) toolbar=root.find('.full-start__buttons').last();
+    if (!toolbar.length) return;
+    var caption=labelResume(rec);
+    var button=win.$('<div class="full-start__button selector view--lsp-resume" role="button">'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '+
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
+      '<path d="M4.6 9A8 8 0 1 1 4 12"/>'+
+      '<path d="M4 4v5h5"/>'+
+      '<path d="m10 8.5 5.5 3.5L10 15.5z" fill="currentColor" stroke="none"/>'+
+      '</svg><span></span></div>');
+    button.find('span').text(caption);
+    button.attr('title',caption).attr('aria-label',caption);
     button.on('hover:enter',function() {
       if (rec.source_kind==='torrent') resumeTorrent(card,rec);
       else resumeOnline(card,rec,e);
     });
-    var where=root.find('.view--torrent').last();
-    if (!where.length) where=root.find('.view--online').last();
-    if (where.length) where.after(button);
-    else {
-      where=root.find('.full-start__buttons').last();
-      if (where.length) where.append(button);
-    }
+    // The second action stays visible even when the mobile toolbar scrolls.
+    var play=toolbar.find('.button--play').first();
+    if (play.length) play.after(button);
+    else toolbar.prepend(button);
   }
   function visibleCard(e) {
     if (!e || e.type!=='complite') return;
