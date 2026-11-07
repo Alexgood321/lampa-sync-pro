@@ -1353,6 +1353,24 @@
           Number(element.episode)===Number(matchEpisode[2]);
       }
       if(!match || job.item)return;
+      // The native picker builds a fresh player item from local Timeline.
+      // Transfer a verified cloud checkpoint to that item only, without
+      // overwriting global Lampa Timeline, NUM, CUB or Trakt.
+      if(element.timeline) {
+        var second=Math.max(0,Math.floor(number(rec.position_seconds)));
+        var duration=Math.max(0,Math.floor(number(rec.duration_seconds)));
+        var complete=rec.watched_state==='completed' ||
+          (duration>0 && second>=duration*0.9);
+        if(complete) {
+          // Replaying the already watched row should start from the beginning.
+          element.timeline.time=0;
+        } else if(second>0) {
+          element.timeline.time=Math.max(number(element.timeline.time),second);
+          element.timeline.duration=Math.max(number(element.timeline.duration),duration);
+          element.timeline.percent=element.timeline.duration>0 ?
+            Math.min(100,100*element.timeline.time/element.timeline.duration):0;
+        }
+      }
       job.item=e.item;
       job.timer=setTimeout(focus,80);
     };
@@ -1492,6 +1510,8 @@
             if(file===selected) {
               sec=number(rec.position_seconds);
               dur=number(rec.duration_seconds);
+              if(rec.watched_state==='completed' ||
+                (dur>0 && sec>=dur*0.9))sec=0;
             }
             file.timeline.time=Math.max(0,Math.round(sec));
             file.timeline.duration=Math.max(0,Math.round(dur))||file.timeline.duration;
