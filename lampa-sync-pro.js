@@ -749,7 +749,7 @@
     try {
       rtSocket.send(JSON.stringify({
         topic:topic,event:event,payload:payload||{},ref:ref,
-        join_ref:joinRef===undefined?rtJoinRef:joinRef
+        join_ref:event==='phx_join' ? ref : (joinRef===undefined?rtJoinRef:joinRef)
       }));
       return ref;
     }catch(e){return '';}
