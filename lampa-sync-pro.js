@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.13-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.14-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.13';
+  var VERSION = '0.1.14';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1429,6 +1429,182 @@
       return true;
     }catch(ignore){cancelTorrentFocus();return false;}
   }
+  // Fast native-style file picker. The standard Lampa Torrent.open() executes
+  // its first Torserver.files() call only after a 2000ms interval, even when
+  // we already fetched file_stats. Reuse the validated response and emit
+  // the same torrent_file + modal update events that NUM Series Pro expects.
+  function openFastTorrentFiles(card,rec,hash,files) {
+    if (!files || files.length<2 ||
+      !L.Modal || typeof L.Modal.open!=='function' ||
+      typeof L.Modal.update!=='function' ||
+      !L.Template || typeof L.Template.get!=='function' ||
+      !L.Controller || typeof L.Controller.collectionFocus!=='function' ||
+      !L.Listener || typeof L.Listener.send!=='function' ||
+      !L.Timeline || typeof L.Timeline.view!=='function' ||
+      typeof win.$!=='function')return false;
+    var entries=files.slice(),contents=win.$('<div class="torrent-files"></div>');
+    if(!contents || typeof contents.append!=='function')return false;
+    // Matches Lampa's natural order, so S01E09 precedes S01E10.
+    entries.sort(function(a,b) {
+      function normalized(f) {
+        return str(f.path).replace(/\d+/g,function(x){
+          return x.length>4?x:('0000'+x).slice(-4);
+        });
+      }
+      return normalized(a).localeCompare(normalized(b));
+    });
+    var params={movie:card,files:entries},playlist=[],rows=[];
+    var recipe=rec.source_recipe || {},checkpoint=rec.episode_key.match(/^s(\d+):e(\d+)$/);
+    var desiredIndex=Number(recipe.file_index),desiredPath=normalPath(recipe.file_path);
+    var watched=rec.watched_state==='completed';
+    function isResumeFile(file) {
+      if(normalPath(file.path)===desiredPath && file.path) {
+        return Number(file.id)===desiredIndex ? 2 : 1;
+      }
+      return checkpoint && Number(file.season)===Number(checkpoint[1]) &&
+        Number(file.episode)===Number(checkpoint[2]) ? 1 : 0;
+    }
+    try {
+      // Build the native torrent-serial/torrent-file templates first; if this
+      // WebView does not support a required API, fall back without opening UI.
+      entries.forEach(function(file) {
+        var original=str(file.path);
+        if(!original)return;
+        var ext=(original.split('.').pop() || '').toLowerCase(),parsed={};
+        try{parsed=L.Torserver.parse({movie:card,files:entries,
+          filename:file.path_human||original,path:original}) || {};}catch(ignore){}
+        var episode=number(parsed.episode),season=number(parsed.season);
+        var localRoad=L.Timeline.view(parsed.hash || original,
+          typeof L.Timeline.link==='function' && episode>0 ?
+          L.Timeline.link(card,season,episode):null) || {};
+        var itemData={};Object.keys(file).forEach(function(k){itemData[k]=file[k];});
+        itemData.card=card;
+        itemData.torrent_hash=hash;
+        itemData.season=season;
+        itemData.episode=episode;
+        itemData.title=file.path_human || original;
+        itemData.fname=itemData.title;
+        itemData.first_title=card.name||card.title||'';
+        itemData.img='./img/img_broken.svg';
+        itemData.air_date='--';
+        itemData.exe=ext;
+        itemData.size=L.Utils && typeof L.Utils.bytesToSize==='function' ?
+          L.Utils.bytesToSize(number(file.length)) : '';
+        itemData.url=L.Torserver.stream(file.path,hash,file.id);
+        itemData.timeline=localRoad;
+        itemData.subtitle=episode>0?'Серия: '+episode:'';
+        itemData.viewed=function(time) {
+          try{
+            if(L.Storage && typeof L.Storage.field==='function' &&
+              L.Storage.field('torrserver_tracktimecode') &&
+              L.Torserver && typeof L.Torserver.viewedSet==='function')
+              L.Torserver.viewedSet(hash,file.id,time);
+          }catch(ignore){}
+        };
+        var matchScore=isResumeFile(itemData);
+        if(matchScore && (!rows.selected || matchScore>rows.selected.score)){
+          rows.selected={file:itemData,score:matchScore};
+        }
+        var road=itemData.timeline;
+        if(matchScore && rec.position_seconds>0 && !watched &&
+          road && typeof road==='object') {
+          var seconds=Math.max(0,number(rec.position_seconds));
+          var duration=Math.max(0,number(rec.duration_seconds));
+          road.time=Math.max(number(road.time),seconds);
+          road.duration=Math.max(number(road.duration),duration);
+          if(road.duration>0)road.percent=Math.min(100,road.time/road.duration*100);
+        }
+        if(matchScore && watched && road && typeof road==='object')
+          road.time=0;
+        var serial=episode>0;
+        var row=L.Template.get(serial?'torrent_file_serial':'torrent_file',itemData);
+        if(!row || !row.length || typeof row.on!=='function' ||
+          typeof row.append!=='function')throw new Error('template_unavailable');
+        if(typeof L.Timeline.render==='function') {
+          var timelineMarkup=L.Timeline.render(road);
+          if(timelineMarkup) {
+            if(serial)row.find('.torrent-serial__content').append(timelineMarkup);
+            else row.append(timelineMarkup);
+          }
+        }
+        if(typeof row.attr==='function')row.attr('data-lsp-fast-file','1');
+        rows.push({item:row,file:itemData,score:matchScore});
+        contents.append(row);
+      });
+      if(!rows.length)return false;
+      var saved=null;
+      rows.forEach(function(x) {
+        if(x.score>0 && (!saved || x.score>saved.score))saved=x;
+      });
+      // Do not open the modal until every template is valid.
+      var empty=win.$('<div class="torrent-files"></div>');
+      L.Modal.open({title:'Файлы торрента',html:empty,size:'large',mask:true,
+        onBack:function(){
+          L.Modal.close();
+          L.Listener.send('torrent_file',{type:'list_close'});
+        }});
+      L.Listener.send('torrent_file',{type:'list_open',items:entries,params:params});
+      rows.forEach(function(x) {
+        var row=x.item,el=x.file;
+        el.playlist=playlist;
+        playlist.push(el);
+        row.on('hover:enter',function(){
+          staged={file:el,card:card,at:Date.now()};
+          try {
+            if(L.Favorite && typeof L.Favorite.add==='function' && card.id)
+              L.Favorite.add('history',card,100);
+            L.Player.play(el);
+            if(typeof L.Player.callback==='function')
+              L.Player.callback(function(){L.Controller.toggle('modal');});
+            L.Player.playlist(playlist);
+            L.Listener.send('torrent_file',{type:'onenter',element:el,item:row,
+              items:entries,params:params});
+          }catch(ignore){note('Не удалось открыть выбранную серию');}
+        });
+        row.on('hover:focus',function(){
+          L.Listener.send('torrent_file',{type:'onfocus',element:el,item:row,
+            items:entries,params:params});
+        });
+        // Preserve NUM's IINA / player options by forwarding long-press.
+        row.on('hover:long',function(){
+          if(!L.Select || typeof L.Select.show!=='function')return;
+          var menu=[
+            {title:'Сбросить прогресс',timeclear:true},
+            {title:'Отметить просмотренным',timefull:true}
+          ];
+          L.Listener.send('torrent_file',{type:'onlong',element:el,item:row,
+            items:entries,params:params,menu:menu});
+          L.Select.show({title:'Действия',items:menu,onSelect:function(chosen){
+            if(chosen.timeclear || chosen.timefull) {
+              el.timeline.percent=chosen.timefull?100:0;
+              el.timeline.time=chosen.timefull?number(el.timeline.duration):0;
+              if(typeof L.Timeline.update==='function')L.Timeline.update(el.timeline);
+              if(chosen.timeclear && typeof el.viewed==='function')el.viewed(0);
+            }
+            if(chosen.onSelect)chosen.onSelect();
+            if(L.Controller && typeof L.Controller.toggle==='function')
+              L.Controller.toggle('modal');
+          }});
+        });
+        L.Listener.send('torrent_file',{type:'render',element:el,item:row,
+          items:entries,params:params});
+      });
+      L.Modal.update(contents);
+      // After NUM synchronously injects season tabs, focus the saved episode.
+      if(saved && L.Modal.scroll && L.Modal.scroll()) {
+        try{
+          var scroll=L.Modal.scroll(),viewport=scroll.render();
+          L.Controller.collectionFocus(saved.item,viewport);
+          if(typeof scroll.update==='function')scroll.update(saved.item,true);
+        }catch(ignore){}
+      }
+      return true;
+    }catch(e){
+      // Fallback only before opening native modal. After modal opened it is
+      // safer to leave that UI intact than to display two overlapping pickers.
+      return !!(L.Modal && typeof L.Modal.opened==='function' && L.Modal.opened());
+    }
+  }
   function nativeTorrentSelectorAllowed() {
     // Native Torrent.open() on Android with external torrent-client mode
     // calls Android.playHash(), bypassing the file picker entirely.
@@ -1509,6 +1685,10 @@
       // section; a saved episode is focused when torrent_file:render arrives.
       // The one-file case uses Select because native Lampa autoplays it after
       // ten seconds, contrary to the user's explicit episode-picker intent.
+      // Fast path reuses file_stats from the successful first TorrServer
+      // request. It avoids Lampa.Torrent.open() re-fetch + 2000ms timer.
+      if(files.length>1 && openFastTorrentFiles(card,rec,hash,files))return;
+      // Compatibility path on older Lampa builds without Modal/Template.
       if(files.length>1 && nativeTorrentSelectorAllowed() &&
         openNativeTorrentFiles(card,rec,hash))return;
 
