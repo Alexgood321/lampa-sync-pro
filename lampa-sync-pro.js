@@ -1032,7 +1032,7 @@
   function getEpisodeState(card,episode) {
     var key=typeof card==='string'?card:mediaKey(card);
     var ep=str(episode);
-    if(!key || !/^(movie|s\\d{1,3}:e\\d{1,4})$/.test(ep))return null;
+    if(!key || !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep))return null;
     var rows=state.snapshot && state.snapshot.watch_state || [], saved=null;
     for(var j=0;j<rows.length;j++){
       if(rows[j].media_key===key && rows[j].episode_key===ep){
@@ -1062,9 +1062,9 @@
   function markEpisode(card,episode,watched,basis) {
     if(!loaded || !state.auth || !state.deviceId)return false;
     var key=typeof card==='string'?card:mediaKey(card),ep=str(episode);
-    if(!/^(tmdb:(tv|movie):\\d{1,12}|imdb:tt\\d{1,12}|kinopoisk:\\d{1,12})$/.test(key) ||
-      !/^(movie|s\\d{1,3}:e\\d{1,4})$/.test(ep) ||
-      (ep!=='movie' && Number((ep.match(/:e(\\d+)$/)||[])[1])<1))return false;
+    if(!/^(tmdb:(tv|movie):\d{1,12}|imdb:tt\d{1,12}|kinopoisk:\d{1,12})$/.test(key) ||
+      !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep) ||
+      (ep!=='movie' && Number((ep.match(/:e(\d+)$/)||[])[1])<1))return false;
     var event={schema:1,event_id:uuid(),device_id:state.deviceId,
       device_seq:++state.seq,base_revision:state.revision,
       kind:watched?'marked_complete':'marked_unwatched',
