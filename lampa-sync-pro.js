@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.15-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.16-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.15';
+  var VERSION = '0.1.16';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -34,7 +34,7 @@
   var rtJoinTimeout=null, rtReconnect=null, rtAuthTimer=null, rtPullTimer=null;
   var rtPendingRevision=0, rtLastEventAt=0, rtJoinCatchup=false;
   var state = { schema: 1, userId: '', auth: null, deviceId: '', seq: 0,
-    revision: 0, snapshot: null, outbox: [], lastTorrent: null };
+    revision: 0, snapshot: null, outbox: [], lastTorrent: null, lastPlayback: null };
 
   function number(value) {
     var x = Number(value);
@@ -66,7 +66,7 @@
   function snapshotState() {
     return { schema: 1, userId: state.userId, auth: state.auth, deviceId: state.deviceId,
       seq: state.seq, revision: state.revision, snapshot: state.snapshot,
-      outbox: state.outbox.slice(), lastTorrent: state.lastTorrent };
+      outbox: state.outbox.slice(), lastTorrent: state.lastTorrent, lastPlayback:state.lastPlayback };
   }
   function fallbackLoad(cb) {
     storageMode = 'localstorage';
@@ -119,10 +119,21 @@
         number(record.updated_at)>Date.now()-6*60*60*1000) {
       state.lastTorrent = record;
     }
+    var last=s.lastPlayback;
+    if(last && validUUID(last.session_id) &&
+      /^(tmdb:(tv|movie):\d{1,12}|imdb:tt\d{1,12}|kinopoisk:\d{1,12})$/.test(str(last.media_key)) &&
+      /^s\d{1,3}:e[1-9]\d{0,3}$/.test(str(last.episode_key)) &&
+      number(last.at)>Date.now()-30*86400000 &&
+      number(last.at)<=Date.now()+60000 &&
+      (last.source_kind==='torrent'||last.source_kind==='lampac')) {
+      state.lastPlayback={media_key:last.media_key,episode_key:last.episode_key,
+        session_id:last.session_id,source_kind:last.source_kind,at:number(last.at),
+        external:last.external===true,tracked:last.tracked===true};
+    }
     state.outbox = Array.isArray(s.outbox) ? s.outbox.filter(function (e) {
       return e && e.schema === 1 && validUUID(e.event_id) && validUUID(e.device_id);
     }).slice(-750) : [];
-    if (!state.auth || !state.userId) { state.auth = null; state.userId = ''; state.outbox = []; state.snapshot = null; state.revision = 0; state.lastTorrent=null; }
+    if (!state.auth || !state.userId) { state.auth = null; state.userId = ''; state.outbox = []; state.snapshot = null; state.revision = 0; state.lastTorrent=null; state.lastPlayback=null; }
   }
   function request(method, path, payload, token, done) {
     var xhr = new XMLHttpRequest();
@@ -165,6 +176,7 @@
       state.seq = 0;
       state.deviceId = uuid();
       state.lastTorrent=null;
+      state.lastPlayback=null;
       lastTorrent=null;
       clearTorrPoll();
     }
@@ -249,6 +261,7 @@
     state.outbox = [];
     state.snapshot = null;
     state.lastTorrent=null;
+    state.lastPlayback=null;
     state.revision = 0;
     state.seq = 0;
     state.deviceId = uuid();
@@ -394,7 +407,7 @@
     if (p < 0 || p > 86400 || dur < 0 || dur > 86400) return;
     if (dur) active.duration = Math.round(dur);
     active.position = Math.max(0,Math.round(p));
-    if (active.position>0) active.hasPlayerProgress=true;
+    if (active.position>0) {active.hasPlayerProgress=true;rememberTrackedPlayback(active);}
     checkpoint(active,'progress',false);
   }
   function subscribe(listener,kind,handler) {
@@ -402,6 +415,53 @@
       listener.follow(kind,handler);
       subscriptions.push({listener:listener,kind:kind,handler:handler});
     }
+  }
+  function isNextEpisode(previous,current) {
+    if(!previous || !current || previous.media_key!==current.media_key)return false;
+    var a=str(previous.episode_key).match(/^s(\d{1,3}):e(\d{1,4})$/);
+    var b=str(current.episode_key).match(/^s(\d{1,3}):e(\d{1,4})$/);
+    // Avoid guessing transitions between seasons without episode counts.
+    return !!a && !!b && Number(a[1])===Number(b[1]) &&
+      Number(b[2])===Number(a[2])+1;
+  }
+  function autoMarkPrevious(ctx) {
+    if(!ctx || !ctx.confirmed || !state.auth || !option('auto_next_complete',true))
+      return false;
+    var previous=state.lastPlayback, candidate=null;
+    if(previous && isNextEpisode(previous,ctx)) {
+      // The prior episode must actually have launched externally and never
+      // have provided confirmed playback progress.
+      if(!previous.external || previous.tracked)return false;
+      candidate=previous;
+    } else {
+      // Another device may have played it. A cloud resume pointer proves a
+      // committed start; strict zero timecodes identify an untracked stream.
+      var remote=findCachedResume(ctx.media_key);
+      if(remote && isNextEpisode(remote,ctx) &&
+        remote.watched_state==='in_progress' &&
+        number(remote.position_seconds)===0 && number(remote.duration_seconds)===0)
+        candidate=remote;
+    }
+    if(!candidate)return false;
+    var previousState=getEpisodeState(candidate.media_key,candidate.episode_key);
+    if(previousState && (previousState.state==='reset' ||
+      previousState.state==='completed'))return false;
+    return markEpisode(candidate.media_key,candidate.episode_key,true);
+  }
+  function rememberPlayback(ctx) {
+    if(!ctx || !ctx.confirmed || !ctx.session_id)return;
+    state.lastPlayback=/^s\d{1,3}:e[1-9]\d{0,3}$/.test(ctx.episode_key) ?
+      {media_key:ctx.media_key,episode_key:ctx.episode_key,
+        session_id:ctx.session_id,source_kind:ctx.source_kind,at:Date.now(),
+        external:ctx.external===true,tracked:ctx.position>0} : null;
+    save();
+  }
+  function rememberTrackedPlayback(ctx) {
+    var record=state.lastPlayback;
+    if(!ctx || !record || record.session_id!==ctx.session_id ||
+      record.tracked || ctx.position<=0)return;
+    record.tracked=true;
+    save();
   }
   function startCapture(data, external) {
     if (!state.auth || !option('capture',true)) return;
@@ -424,6 +484,8 @@
     }
     if (d.timeline && number(d.timeline.time) >= 0) active.position = Math.round(number(d.timeline.time));
     if (d.timeline && number(d.timeline.duration) > 0) active.duration = Math.round(number(d.timeline.duration));
+    autoMarkPrevious(active);
+    rememberPlayback(active);
     newEvent(active,'started');
     if(active.source_kind==='torrent')startTorrPoll(active);
   }
@@ -550,6 +612,7 @@
         (!ctx.position || seconds>ctx.position);
       if ((changed || newlyAvailable) && seconds!==ctx.viewedLastEmitted) {
         ctx.position=seconds;
+        rememberTrackedPlayback(ctx);
         ctx.viewedLastEmitted=seconds;
         checkpoint(ctx,kind==='stopped'?'stopped':'progress',true);
         rememberLastTorrent(ctx);
@@ -606,6 +669,7 @@
       subscribe(L.PlayerVideo.listener,'ended',function() {
         if (!active || active.external) return;
         if (active.duration) active.position = active.duration;
+        rememberTrackedPlayback(active);
         checkpoint(active,'completed',true);
       });
     }
@@ -619,7 +683,7 @@
         if (p<0 || p>86400 || dur<0 || dur>86400) return;
         active.position = Math.round(p);
         if (dur>0) active.duration = Math.round(dur);
-        if (active.position>0) active.hasPlayerProgress=true;
+        if (active.position>0) {active.hasPlayerProgress=true;rememberTrackedPlayback(active);}
         checkpoint(active,'progress',false);
       });
     }
@@ -1918,7 +1982,8 @@
     return {version:VERSION,ready:loaded,authenticated:!!state.auth,
       email:state.auth && state.auth.email || '',revision:state.revision,
       queued:state.outbox.length,device:state.deviceId,storage:storageMode,
-      capture:option('capture',true),busy:networkBusy,torrserver:torrStatus,
+      capture:option('capture',true),autoNextComplete:option('auto_next_complete',true),
+      busy:networkBusy,torrserver:torrStatus,
       realtime:rtState,lastRealtimeAt:rtLastEventAt,lastSyncAt:lastSuccessfulSync};
   }
   // Native Lampa and My Store recognize plugin source by the real Lampa. API usage.
@@ -1986,6 +2051,11 @@
       field:{name:'Сохранять просмотр торрентов',
         description:'Только подтверждённое воспроизведение; HDRezka пока не затрагивается'},
       onChange:function(v){L.Storage.set('lsp_capture',v===true||v==='true');}});
+    L.SettingsApi.addParam({component:'lampa_sync_pro',
+      param:{name:'lsp_auto_next_complete',type:'trigger',default:true},
+      field:{name:'Отмечать предыдущую серию при запуске следующей',
+        description:'Без таймкода: только соседние серии одного сезона; ручной сброс сохраняется'},
+      onChange:function(v){L.Storage.set('lsp_auto_next_complete',v===true||v==='true');}});
     button('lsp_logout','Выйти и очистить кэш','Удаляет локальную очередь и сессию',
       logout);
   }
