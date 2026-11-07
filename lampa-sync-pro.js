@@ -976,7 +976,8 @@
     if(!loaded || !state.auth || !state.deviceId)return false;
     var key=typeof card==='string'?card:mediaKey(card),ep=str(episode);
     if(!/^(tmdb:(tv|movie):\d{1,12}|imdb:tt\d{1,12}|kinopoisk:\d{1,12})$/.test(key) ||
-      !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep))return false;
+      !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep) ||
+      (ep!=='movie' && Number((ep.match(/:e(\d+)$/)||[])[1])<1))return false;
     var event={schema:1,event_id:uuid(),device_id:state.deviceId,
       device_seq:++state.seq,base_revision:state.revision,
       kind:watched?'marked_complete':'marked_unwatched',
