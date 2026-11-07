@@ -297,19 +297,52 @@
     if (d.card) return d.card;
     if (d.movie) return d.movie;
     if (staged && staged.card && Date.now() - staged.at < 100000) return staged.card;
+    if (L.Activity && typeof L.Activity.active==='function') {
+      var current=L.Activity.active() || {};
+      if (current.movie || current.card) return current.movie || current.card;
+    }
     return null;
+  }
+  function nativeOnlineRecipe(data,card) {
+    if(!data || !card || !L.Storage)return null;
+    var meta=data.lampac_resume || {};
+    var inherited=meta.recipe || meta;
+    var supplied=inherited.mode==='online' && inherited.online ? inherited.online : null;
+    if(!supplied && data.isonline!==true)return null;
+    supplied=supplied || {};
+    var balancer=str(supplied.balanser);
+    if(!balancer) {
+      try{balancer=str(typeof L.Storage.field==='function' ?
+        L.Storage.field('active_balanser'):L.Storage.get('active_balanser',''));}
+      catch(ignore){return null;}
+    }
+    if(!/^[A-Za-z0-9_.-]{1,64}$/.test(balancer))return null;
+    var choices={};
+    try{choices=L.Storage.get('online_choice_'+balancer,{}) || {};}catch(ignore){}
+    if(typeof choices==='string'){try{choices=JSON.parse(choices);}catch(ignore){choices={};}}
+    var choice=choices[card.id] || {}, id=str(supplied.voice_id || data.voice_id || choice.voice_id);
+    if(!/^[A-Za-z0-9_.:-]{0,100}$/.test(id))id='';
+    var season=supplied.season_index!=null?supplied.season_index:choice.season;
+    var voice=supplied.voice_index!=null?supplied.voice_index:choice.voice;
+    return {balanser:balancer,voice_id:id,
+      voice_name:str(supplied.voice_name || data.voice_name || choice.voice_name).slice(0,100),
+      season_index:Math.max(0,Math.min(1000,Math.floor(number(season)))),
+      voice_index:Math.max(0,Math.min(1000,Math.floor(number(voice))))};
   }
   function makeContext(data) {
     var d = data || {};
     var fallback = staged && Date.now() - staged.at < 100000 ? staged.file : null;
     var card = getCard(d) || (fallback && fallback.card);
-    var src = sourceFrom(d, fallback);
+    var torrent=d.isonline===true ? null : sourceFrom(d,fallback);
+    var online=torrent ? null : nativeOnlineRecipe(d,card);
+    var src=torrent || online;
     var media = mediaKey(card);
     if (!src || !media) return null;
     var episode = /^tmdb:movie:/.test(media) || (!!card && card.release_date && !card.first_air_date &&
       !card.number_of_seasons) ? 'movie' : (parseEpisode(d) || parseEpisode(fallback));
     if (!episode) return null;
-    return { card: card, media_key: media, episode_key: episode, recipe: src,
+    return {card:card,media_key:media,episode_key:episode,recipe:src,
+      source_kind:torrent?'torrent':'lampac',
       timeline_hash: str(d.timeline_hash || d.timeline && d.timeline.hash ||
         fallback && (fallback.timeline_hash || fallback.timeline && fallback.timeline.hash)),
       session_id: uuid(), position: 0, duration: 0, lastSent: 0, confirmed: false,
@@ -320,7 +353,7 @@
     var evt = { schema: 1, event_id: uuid(), device_id: state.deviceId,
       device_seq: ++state.seq, base_revision: state.revision, kind: kind,
       media_key: ctx.media_key, episode_key: ctx.episode_key,
-      playback_session_id: ctx.session_id, source_kind: 'torrent',
+      playback_session_id: ctx.session_id, source_kind: ctx.source_kind || 'torrent',
       source_recipe: ctx.recipe, position_seconds: Math.round(ctx.position),
       duration_seconds: Math.round(ctx.duration) };
     if (!evt.event_id) return;
@@ -367,7 +400,7 @@
     if (!active || !active.session_id) active = makeContext(data);
     if (!active || !active.session_id || active.confirmed) return;
     var d = data || {};
-    if (d.url && staged && staged.file && staged.file.url &&
+    if (active.source_kind==='torrent' && d.url && staged && staged.file && staged.file.url &&
         d.url !== staged.file.url &&
         str(d.url).toUpperCase().indexOf(active.recipe.infohash) < 0 &&
         Date.now()-staged.at<100000) {
@@ -377,12 +410,14 @@
     active.confirmed = true;
     active.external = external;
     active.owner = state.userId;
-    lastTorrent=active;
-    rememberLastTorrent(active);
+    if(active.source_kind==='torrent') {
+      lastTorrent=active;
+      rememberLastTorrent(active);
+    }
     if (d.timeline && number(d.timeline.time) >= 0) active.position = Math.round(number(d.timeline.time));
     if (d.timeline && number(d.timeline.duration) > 0) active.duration = Math.round(number(d.timeline.duration));
     newEvent(active,'started');
-    startTorrPoll(active);
+    if(active.source_kind==='torrent')startTorrPoll(active);
   }
 
   function clearTorrPoll() {
@@ -547,7 +582,7 @@
       active=null;
       staged=null;
       if (ctx && ctx.confirmed) {
-        if (ctx.external && !ctx.position) {
+        if (ctx.source_kind!=='lampac' && ctx.external && !ctx.position) {
           captureTorrViewed(ctx,'stopped',false,function() {});
           // External players may persist their timecode after the stream closes.
           setTimeout(function() {
