@@ -32,7 +32,8 @@ function runTorrentResumeRetrySmoke(source) {
     var empty={length:0,last:function(){return this;},remove:function(){}};
     var anchor={length:1,first:function(){return this;},after:function(x){button=x;}};
     var toolbar={length:1,last:function(){return this;},
-      find:function(key){return key==='.button--play'?anchor:empty;}};
+      find:function(key){return key==='.button--play'?anchor:empty;},
+      prepend:function(x){button=x;}};
     var root={find:function(key){return key==='.full-start-new__buttons'?toolbar:empty;}};
     function dom(html){
       if(String(html).indexOf('view--lsp-resume')<0)return empty;
