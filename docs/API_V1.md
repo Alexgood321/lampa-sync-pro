@@ -5,6 +5,7 @@
 - `20261106232355_lsp_sync_v1_initial.sql`
 - `20261106232634_lsp_sync_v1_hardening.sql`
 - `20261106233416_lsp_sync_v1_reset_resume_consistency.sql`
+- `20261107004025_lsp_sync_v1_preserve_position_on_start.sql`
 
 ## Статус
 
@@ -106,6 +107,6 @@ Authorization: Bearer <SUPABASE_USER_ACCESS_TOKEN>
 
 Автоматизированный SQL smoke: [`tests/supabase_smoke.sql`](../tests/supabase_smoke.sql). Запускается администратором БД внутри одной транзакции, **все тестовые записи откатываются**. Тесты имитируют `authenticated` и JWT subject через `SET LOCAL ROLE` и `set_config`; это **не эквивалент подписанной HTTP Auth-сессии**.
 
-На 7 ноября 2026 г.: **19/19 SQL-проверок выполнены**, Supabase Security Advisor **0 замечаний**, Performance Advisor **0 замечаний**, пользовательские таблицы пустые.
+На 7 ноября 2026 г.: **24/24 SQL-проверки выполнены**, Supabase Security Advisor **0 замечаний**, Performance Advisor **0 замечаний** при предыдущей проверке; в БД уже имеются реальные события двух тестовых устройств. Миграция `preserve_position_on_start` гарантирует, что `started` с позицией `0` не стирает существующий подтверждённый checkpoint.
 
 Для E2E требуется подтвердить настоящий HTTP-запрос с валидным JWT и CORS на устройствах. Пока проверены лишь SQL-транзакции и клиентские моки. [Альфа-клиент](PLUGIN_ALPHA.md).
