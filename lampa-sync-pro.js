@@ -429,15 +429,18 @@
       return false;
     var previous=state.lastPlayback, candidate=null;
     if(previous && isNextEpisode(previous,ctx)) {
-      // The prior episode must actually have launched externally and never
-      // have provided confirmed playback progress.
-      if(!previous.external || previous.tracked)return false;
+      // Do not infer completion from a stale app session or a native player.
+      // The last confirmed external start must be within 30 days.
+      if(!previous.external || previous.tracked ||
+        number(previous.at)<Date.now()-30*86400000 ||
+        number(previous.at)>Date.now()+60000)return false;
       candidate=previous;
     } else {
       // Another device may have played it. A cloud resume pointer proves a
       // committed start; strict zero timecodes identify an untracked stream.
       var remote=findCachedResume(ctx.media_key);
       if(remote && isNextEpisode(remote,ctx) &&
+        (remote.source_kind==='torrent'||remote.source_kind==='lampac') &&
         remote.watched_state==='in_progress' &&
         number(remote.position_seconds)===0 && number(remote.duration_seconds)===0)
         candidate=remote;
