@@ -16,7 +16,7 @@ function runRealtimeSmoke(source) {
   }
   var sockets=[],timers=[],intervals=[],requests=[],settings={},notes=[];
   var docEvents=emitter(),winEvents=emitter(),appEvents=emitter(),playerEvents=emitter();
-  var local={},prompts=['test@example.org','password123'],seq=0,cloudRevision=0,pushes=[];
+  var local={},storage={},prompts=['test@example.org','password123'],seq=0,cloudRevision=0,pushes=[];
   var account='11111111-1111-4111-8111-111111111111';
   var other='22222222-2222-4222-8222-222222222222';
   var hash='0123456789ABCDEF0123456789ABCDEF01234567';
@@ -97,7 +97,8 @@ function runRealtimeSmoke(source) {
       Listener:appEvents,Player:{listener:playerEvents},
       PlayerVideo:{listener:emitter()},Timeline:{listener:emitter()},
       Torserver:{},Plugins:{get:function(){return [];},save:function(){}},
-      Storage:{get:function(key,defaultValue){return defaultValue;},set:function(){}},
+      Storage:{get:function(key,defaultValue){return Object.prototype.hasOwnProperty.call(storage,key)?storage[key]:defaultValue;},
+        set:function(k,v){storage[k]=v;},field:function(k){return storage[k];}},
       Input:{edit:function(o,cb){cb(prompts.shift());}},
       SettingsApi:{addComponent:function(){},addParam:function(p){settings[p.param.name]=p;}},
       Noty:{show:function(s){notes.push(s);}}
@@ -186,8 +187,53 @@ function runRealtimeSmoke(source) {
     !win.LampaSyncPro.markEpisode('tmdb:tv:288673','s1:e0',true),
     'invalid media and episode identities rejected');
 
-  notify(ws,account,4);
-  ok(win.LampaSyncPro.status().revision===4,'self event does not fetch again');
+  // Online Lampa playback uses provider/voice metadata, never playback stream URLs.
+  storage.active_balanser='kodik';
+  storage.online_choice_kodik={288673:{season:0,voice:2,voice_id:'g.12',voice_name:'Dub'}};
+  var online={isonline:true,card:movie,season:1,episode:3,
+    url:'https://private.example/playlist?token=secret',
+    timeline:{hash:'online-s1e3',time:0,duration:0}};
+  playerEvents.emit('create',{data:online});
+  playerEvents.emit('external',online);
+  ok(win.LampaSyncPro.status().queued===1,'online player event captured');
+  fireLater(1800);
+  ok(pushes.length===4 && pushes[3].source_kind==='lampac',
+    'Lampac metadata uploaded through same event queue');
+  ok(pushes[3].source_recipe.balanser==='kodik' &&
+      pushes[3].source_recipe.voice_id==='g.12',
+    'provider and voice persisted without links');
+  ok(!JSON.stringify(pushes[3].source_recipe).includes('private.example') &&
+      !JSON.stringify(pushes[3].source_recipe).includes('secret'),
+    'online stream URL and token excluded from cloud');
+
+  // One-way import of old ARST history does not delete its storage key.
+  var legacy={
+    schema:1,cards:{
+      'tmdb:99112':{aliases:['tmdb:99112'],modes:{
+        torrent:{mode:'torrent',updated_at:10000,episode:{season:1,episode:4},
+          torrent:{infohash:hash,file_index:9,file_path:'S01E04.mkv',
+            magnet:'magnet:?xt=urn:btih:abc&secret=yes'},
+          progress:{time:240,duration:1800,percent:13}}}},
+      'tmdb:99113':{aliases:['tmdb:99113'],modes:{
+        online:{mode:'online',updated_at:12000,episode:{season:2,episode:6},
+          online:{balanser:'kodik',voice_id:'77',voice_name:'Studio',season_index:1,voice_index:2},
+          progress:{time:120,duration:2400,percent:5}}}}
+    }
+  };
+  storage.lampac_resume_history_v1=legacy;
+  win.LampaSyncPro.importLegacy();
+  ok(win.LampaSyncPro.status().queued===2,'legacy records queued without touching ARST history');
+  ok(storage.lampac_resume_history_v1===legacy,'original ARST history unchanged');
+  fireLater(1800);
+  ok(pushes.length===6 && pushes[4].source_kind==='torrent' &&
+      pushes[5].source_kind==='lampac','both legacy torrent and online records imported');
+  ok(!JSON.stringify(pushes[4].source_recipe).includes('magnet:') &&
+      pushes[4].source_recipe.infohash===hash,
+    'legacy magnet private parameters excluded');
+
+
+  notify(ws,account,7);
+  ok(win.LampaSyncPro.status().revision===7,'self event does not fetch again');
   // Unexpected close re-establishes the socket with exponential backoff.
   ws.breakConnection();
   ok(win.LampaSyncPro.status().realtime==='reconnecting','close schedules reconnect');
@@ -197,11 +243,11 @@ function runRealtimeSmoke(source) {
   second.open();
   var join2=latestJoin(second);
   ok(join2.payload.config.postgres_changes.length===1,'subscription restored');
-  cloudRevision=5;
+  cloudRevision=8;
   var beforeRejoin=snapCount();
   ackJoin(second);
   ok(snapCount()===beforeRejoin+2,'reconnect fills missed revision');
-  ok(win.LampaSyncPro.status().revision===5,'lost offline changes restored');
+  ok(win.LampaSyncPro.status().revision===8,'lost offline changes restored');
   // Renew JWT while socket remains connected.
   var refreshTimer=timers.filter(function(x){return x.active&&x.ms>1000000;})[0];
   ok(!!refreshTimer,'JWT refresh timer scheduled');
