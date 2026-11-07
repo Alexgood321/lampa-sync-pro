@@ -12,7 +12,9 @@ function runResumeSmoke(source) {
       remove:function(n,fn){m[n]=(m[n]||[]).filter(function(f){return f!==fn;});},
       emit:function(n,v){(m[n]||[]).slice().forEach(function(f){f(v);});}};
   }
-  var settings={},queue=['test@example.org','password123'],renders=[],urls=[];
+  var settings={},queue=['test@example.org','password123'],renders=[],urls=[],
+    timers=[],selectedUI=null,openedTorrents=[],nativeFocused=[],scrollTargets=[],
+    androidMode=false,internalTorrent=true;
   var app=emitter(),player=emitter(),video=emitter(),tl=emitter();
   var rec={episode_key:'s2:e5',source_key:'torrent:0123456789ABCDEF0123456789ABCDEF01234567:4',
     source_kind:'torrent',source_recipe:{infohash:'0123456789ABCDEF0123456789ABCDEF01234567',
@@ -60,7 +62,11 @@ function runResumeSmoke(source) {
     if(html && html.nodeMock)return html;
     if(String(html).indexOf('view--lsp-resume')!==-1){
       var obj={html:html,attrs:{},value:'',
-        find:function(sel){if(sel==='span')return {text:function(t){obj.value=t;return this;}};return empty;},
+        find:function(sel){
+          if(sel==='span')return {text:function(t){obj.value=t;return this;}};
+          if(sel==='.lsp-resume-episode')return {text:function(t){obj.episode=t;return this;}};
+          return empty;
+        },
         attr:function(k,v){this.attrs[k]=v;return this;},
         on:function(k,cb){this[k]=cb;return this;}};
       return obj;
@@ -81,9 +87,19 @@ function runResumeSmoke(source) {
         percent:0,handler:function(){}};},
         update:function(road){seededRoad=road;}},
       Storage:{get:function(k,def){return Object.prototype.hasOwnProperty.call(storage,k)?storage[k]:def;},
-        set:function(k,v){storage[k]=v;}},
+        set:function(k,v){storage[k]=v;},
+        field:function(k){return k==='internal_torrclient' ? internalTorrent : false;}},
       Activity:{active:function(){return onlineMode?{component:'lampac',activity:{render:function(){return onlinePanel;}}}:null;}},
       Noty:{show:function(){}},
+      Platform:{is:function(k){return k==='android'&&androidMode;}},
+      Torrent:{open:function(hash,card){openedTorrents.push({hash:hash,card:card});}},
+      Select:{show:function(params){selectedUI=params;}},
+      Controller:{enabled:function(){return {name:'modal'};},
+        collectionFocus:function(item,viewport){nativeFocused.push(item);}},
+      Modal:{scroll:function(){return {
+        render:function(){return {0:{contains:function(){return true;}}};},
+        update:function(item){scrollTargets.push(item);}
+      };}},
       SettingsApi:{addComponent:function(){},addParam:function(x){settings[x.param.name]=x;}},
       Input:{edit:function(o,cb){cb(queue.shift());}},
       Torserver:{
@@ -112,8 +128,15 @@ function runResumeSmoke(source) {
     }
     this.status=200;this.responseText=JSON.stringify(response);this.onload();
   };
+  function later(fn,ms){var t={fn:fn,ms:ms,active:true};timers.push(t);return t;}
+  function cancel(t){if(t)t.active=false;}
+  function flushTimer(ms){
+    var t=timers.filter(function(x){return x.active&&x.ms===ms;})[0];
+    if(!t)throw new Error('Missing expected timer: '+ms);
+    t.active=false;t.fn();
+  }
   new Function('window','XMLHttpRequest','setTimeout','clearTimeout','setInterval','clearInterval',
-    source)(win,FakeXHR,function(){return 1;},function(){},function(){return 2;},function(){});
+    source)(win,FakeXHR,later,cancel,function(){return 2;},function(){});
   settings.lsp_login.onChange();
   var movie={id:7000,source:'tmdb',media_type:'tv',name:'Mock TV',first_air_date:'2000-01-01'};
   function showCard(){
@@ -136,25 +159,51 @@ function runResumeSmoke(source) {
   assert(typeof button['hover:enter']==='function','button has action');
   assert(button.value.indexOf('С2E5')!==-1 && button.value.indexOf('18:40')!==-1,
     'button labels the episode and timecode');
+  assert(button.episode==='S02E05',
+    'season and episode are visible on mobile without relying on a hidden span');
   button['hover:enter']();
-  assert(!!played,'native player launch called');
-  played=null;
+  assert(openedTorrents.length===1,'Continue opens native torrent file cards');
+  assert(played===null,'Continue never autoplays the saved episode');
+  assert(openedTorrents[0].hash===rec.source_recipe.infohash,
+    'same saved torrent infohash is used');
+  var savedItem={0:{offsetParent:{}}};
+  app.emit('torrent_file',{type:'render',element:{id:4,path:'S02E05.mkv',
+    season:2,episode:5,torrent_hash:rec.source_recipe.infohash},
+    item:savedItem,params:{movie:movie}});
+  flushTimer(80);
+  assert(nativeFocused[0]===savedItem && scrollTargets[0]===savedItem,
+    'native file list focuses and scrolls to the saved episode');
+  assert(played===null,'focusing a series row does not launch playback');
   sourceButton['hover:enter']();
-  assert(!!played && played.id===4,'source picker Continue uses the same native torrent resume');
-  assert(sourceEntries.length===1,'source picker has no duplicate after activation');
-  assert(played.id===4,'correct torrent file selected');
-  assert(played.timeline.time===1120,'resume timecode transferred into timeline');
-  assert(Array.isArray(playlist)&&playlist.length===2,'playlist preserved');
-  assert(!urls.some(function(u){return u.indexOf('/stream?link=')!==-1;}),
-    'video traffic never goes to Supabase');
-  // Completion advances only to a real following episode in this playlist.
+  assert(openedTorrents.length===2,'source menu Continue opens the same torrent cards');
+  assert(sourceEntries.length===1,'source menu has no duplicates');
   rec.watched_state='completed';
   showCard();
   assert(!!button && !!sourceButton,'both buttons remain after completed episode');
-  assert(sourceEntries.length===1,'card refresh never duplicates the source menu entry');
+  assert(sourceEntries.length===1,'card refresh never duplicates the source entry');
   button['hover:enter']();
-  assert(played.id===5,'completed episode advances to next file');
-  assert(played.timeline.time===0,'next episode starts from zero');
+  assert(openedTorrents.length===3 && played===null,
+    'completed series still offers choice of saved or next episode, not autoplay');
+  // Android external torrent mode uses native Lampa Select, because
+  // Torrent.open would directly run Android.playHash without file selection.
+  androidMode=true;internalTorrent=false;
+  sourceButton['hover:enter']();
+  assert(!!selectedUI && selectedUI.items.length===2,
+    'Android external mode offers a file picker instead of playing a hash');
+  assert(selectedUI.items[0].selected && !selectedUI.items[1].selected,
+    'saved episode is initially highlighted in fallback picker');
+  assert(played===null,'fallback picker does not autoplay');
+  selectedUI.items[1].onSelect();
+  assert(!!played && played.id===5 && played.timeline.time===0,
+    'user can select the next episode, which starts at zero');
+  selectedUI.items[0].onSelect();
+  assert(played.id===4 && played.timeline.time===1120,
+    'manual choice of saved episode resumes at confirmed timecode');
+  assert(Array.isArray(playlist) && playlist.length===2,
+    'fallback picker preserves the native player playlist');
+  assert(!urls.some(function(u){return u.indexOf('/stream?link=')!==-1;}),
+    'stream traffic never passes through Supabase');
+  androidMode=false;internalTorrent=true;
   // Native Lampac online resume remains part of our own Sync Pro button.
   rec={episode_key:'s2:e5',source_key:'lampac:kodik:88',source_kind:'lampac',
     source_recipe:{balanser:'kodik',voice_id:'88',voice_name:'Studio',
