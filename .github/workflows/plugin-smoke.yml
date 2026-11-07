@@ -32,3 +32,5 @@ jobs:
         run: node tests/resume_smoke.js
       - name: TorrServer TrackTimecode /viewed
         run: node tests/torrserver_viewed_smoke.js
+      - name: Automatic cross-device refresh
+        run: node tests/auto_sync_smoke.js
