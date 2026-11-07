@@ -206,12 +206,12 @@ function runResumeSmoke(source) {
   assert(sourceButton !== button &&
     sourceButton.html.indexOf('view--lsp-resume-source')!==-1,
     'source picker and visible card buttons are distinct DOM elements');
-  assert(button.html.indexOf('<svg viewBox="0 0 32 32"')!==-1 &&
+  assert(button.html.indexOf('<svg class="lsp-resume-glyph" viewBox="0 0 32 32"')!==-1 &&
     button.html.includes('stroke-width="2.7"') &&
     button.html.includes('m13 11 9 5-9 5z') &&
     button.attrs['aria-label'].indexOf('Продолжить')!==-1,
     'Continue has a full-size play-and-resume SVG with an accessible label');
-  assert(sourceButton.html.includes('viewBox="0 0 32 32"'),
+  assert(sourceButton.html.includes('class="lsp-resume-glyph" viewBox="0 0 32 32"'),
     'menu entry uses the same balanced SVG');
   assert(button.html.indexOf('view--lsp-resume')!==-1,
     'card action uses its own class, separate from native source selection');
