@@ -424,6 +424,33 @@ function runResumeSmoke(source) {
   assert(fastEvents.filter(function(x){return x==='list_close';}).length===prevEventCount+1,
     'exceptional fast window closes NUM list state');
   win.Lampa.Modal.update=priorUpdate;
+  // Prefetch metadata while the card is visible, before the first click.
+  // This prevents waiting for network roundtrip on normal repeat openings.
+  win.Lampa.Torserver.url=function(){return 'http://server-one:8090';};
+  var requestsBeforeCache=fastFilesRequests,modalsBeforeCache=fastOpened.length;
+  showCard();
+  assert(fastFilesRequests===requestsBeforeCache,
+    'card draw schedules rather than blocks on TorrServer prefetch');
+  flushTimer(180);
+  assert(fastFilesRequests===requestsBeforeCache+1,
+    'one read-only TorrServer metadata prefetch completes in background');
+  button['hover:enter']();
+  assert(fastFilesRequests===requestsBeforeCache+1 &&
+    fastOpened.length===modalsBeforeCache+1,
+    'cached file list opens instantly without another HTTP request');
+  fastOpened[fastOpened.length-1].onBack();
+  showCard();button['hover:enter']();
+  assert(fastFilesRequests===requestsBeforeCache+1,
+    'cache is reused for same user/hash/server within 90 seconds');
+  fastOpened[fastOpened.length-1].onBack();
+  win.Lampa.Torserver.url=function(){return 'http://server-two:8090';};
+  showCard();flushTimer(180);
+  assert(fastFilesRequests===requestsBeforeCache+2,
+    'switching TorrServer invalidates the old in-memory cache');
+  button['hover:enter']();
+  assert(fastFilesRequests===requestsBeforeCache+2,
+    'new TorrServer cached response is reused without a second request');
+  fastOpened[fastOpened.length-1].onBack();
   // Native Lampac online resume remains part of our own Sync Pro button.
   rec={episode_key:'s2:e5',source_key:'lampac:kodik:88',source_kind:'lampac',
     source_recipe:{balanser:'kodik',voice_id:'88',voice_name:'Studio',
