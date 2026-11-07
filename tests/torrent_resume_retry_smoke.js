@@ -12,7 +12,7 @@ function runTorrentResumeRetrySmoke(source) {
     emit:function(k,x){(handlers[k]||[]).slice().forEach(function(f){f(x);});}
   };}
   function scenario(sequence,addError) {
-    var now=100000,clock=[],id=0,reads=0,adds=0,plays=0,notes=[],button=null;
+    var now=100000,clock=[],id=0,reads=0,adds=0,plays=0,menus=0,notes=[],button=null;
     var bus=eventBus(),settings={},inputs=['test@example.org','password123'],storage={},random=0;
     function later(fn,ms){var v={id:++id,at:now+Number(ms||0),active:true,fn:fn};clock.push(v);return v;}
     function clear(t){if(t)t.active=false;}
@@ -57,6 +57,7 @@ function runTorrentResumeRetrySmoke(source) {
         SettingsApi:{addComponent:function(){},addParam:function(v){settings[v.param.name]=v;}},
         Input:{edit:function(o,cb){cb(inputs.shift());}},
         Noty:{show:function(msg){notes.push(msg);}},
+        Select:{show:function(opts){menus++;}},
         Torserver:{
           files:function(h,success,fail) {
             var state=sequence[Math.min(reads++,sequence.length-1)];
@@ -92,15 +93,15 @@ function runTorrentResumeRetrySmoke(source) {
     return {click:function(){if(!button)throw Error('Button absent');button['hover:enter']();},
       advance:advance,destroy:function(){win.LampaSyncPro.destroy();},
       reads:function(){return reads;},adds:function(){return adds;},
-      plays:function(){return plays;},notes:function(){return notes;}};
+      plays:function(){return plays;},menus:function(){return menus;},notes:function(){return notes;}};
   }
   var cold=scenario(['error','error','empty','ok'],false);
   cold.click();
   ok(cold.reads()===1,'first click starts TorrServer read');
   cold.advance(549);ok(cold.reads()===1,'read is not retried prematurely');
   cold.advance(1);ok(cold.reads()===2&&cold.adds()===1,'retry then single hash add');
-  cold.advance(1200);ok(cold.reads()===4&&cold.plays()===1,
-    'first click recovers asynchronously once file_stats become ready');
+  cold.advance(1200);ok(cold.reads()===4&&cold.menus()===1 && cold.plays()===0,
+    'first click recovers to file selection once metadata become ready, without autoplay');
   ok(!cold.notes().some(function(n){return n.indexOf('Не удалось загрузить файлы')>=0;}),
     'no premature failed-files warning');
   cold.destroy();
@@ -109,12 +110,13 @@ function runTorrentResumeRetrySmoke(source) {
   duplicate.click();duplicate.click();
   ok(duplicate.reads()===1,'double tap starts only one resume flow');
   duplicate.advance(2000);
-  ok(duplicate.plays()===1,'only one player launch after double tap');
+  ok(duplicate.menus()===1 && duplicate.plays()===0,
+    'only one file selector opens after repeated tapping');
   duplicate.destroy();
 
   var hashError=scenario(['error','error','ok'],true);
   hashError.click();hashError.advance(2000);
-  ok(hashError.adds()===1&&hashError.plays()===1,
+  ok(hashError.adds()===1&&hashError.menus()===1&&hashError.plays()===0,
     'hash add failure is not fatal if metadata becomes available');
   hashError.destroy();
 
@@ -122,14 +124,15 @@ function runTorrentResumeRetrySmoke(source) {
   missing.click();missing.advance(20000);
   ok(missing.reads()===7&&missing.adds()===1,
     'bounded total file reads and at most one hash add');
-  ok(missing.plays()===0&&missing.notes().filter(function(n){
+  ok(missing.plays()===0&&missing.menus()===0&&missing.notes().filter(function(n){
     return n.indexOf('Не удалось загрузить файлы')>=0;}).length===1,
     'final error appears only after retries are exhausted');
   missing.destroy();
 
   var canceled=scenario(['error','ok'],false);
   canceled.click();canceled.destroy();canceled.advance(20000);
-  ok(canceled.reads()===1&&canceled.plays()===0,'destroy cancels retry timer');
+  ok(canceled.reads()===1&&canceled.menus()===0&&canceled.plays()===0,
+    'destroy cancels retry before opening a chooser or starting a video');
   return {passed:count};
 }
 if(typeof module!=='undefined'&&module.exports){
