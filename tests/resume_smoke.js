@@ -22,10 +22,11 @@ function runResumeSmoke(source) {
     {id:4,path:'S02E05.mkv',path_human:'S02E05.mkv'},
     {id:5,path:'S02E06.mkv',path_human:'S02E06.mkv'}
   ];
-  var button=null,played=null,playlist=null,random=0,db={},storage={},sourceMenuInsertions=0,
+  var button=null,sourceButton=null,sourceEntries=[],sourceMenuPosition='',
+    played=null,playlist=null,random=0,db={},storage={},
     openedOnline=0,selectedOnline=[],seededRoad=null,onlineMode=false;
   var anchor={length:1,last:function(){return this;},
-    after:function(){sourceMenuInsertions++;}};
+    after:function(b){sourceButton=b;sourceEntries.push(b);sourceMenuPosition='after Torrent';}};
   var playAnchor={length:1,first:function(){return this;},after:function(b){button=b;}};
   var cardToolbar={length:1,last:function(){return this;},find:function(sel){
     return sel==='.button--play'?playAnchor:empty;},
@@ -44,11 +45,15 @@ function runResumeSmoke(source) {
   var episodeNodes=[onlineEpisode(5),onlineEpisode(6)];
   var episodeList={length:2,each:function(fn){episodeNodes.forEach(function(n,i){fn(i,n);});}};
   var onlinePanel={find:function(selector){return selector==='.online-prestige--full'?episodeList:empty;}};
+  var sourceMenu={length:1,last:function(){return this;},
+    prepend:function(b){sourceButton=b;sourceEntries.push(b);sourceMenuPosition='before sources';}};
   var root={find:function(sel){
-    if(sel==='.view--torrent')return anchor;
+    if(sel==='.view--torrent' || sel==='.buttons--container > .view--torrent')return anchor;
+    if(sel==='.buttons--container')return sourceMenu;
     if(sel==='.full-start-new__buttons')return cardToolbar;
     if(sel==='.view--online')return onlineAnchor;
-    if(sel==='.view--lsp-resume')return empty;
+    if(sel==='.view--lsp-resume')return {remove:function(){button=null;}};
+    if(sel==='.view--lsp-resume-source')return {remove:function(){sourceEntries=[];sourceButton=null;}};
     return empty;
   }};
   function dom(html){
@@ -116,7 +121,13 @@ function runResumeSmoke(source) {
   }
   showCard();
   assert(!!button,'cloud resume button appears directly on the card toolbar');
-  assert(sourceMenuInsertions===0,'source picker stays free of duplicate Continue entry');
+  assert(!!sourceButton && sourceEntries.length===1,
+    'source picker contains one Continue entry');
+  assert(sourceMenuPosition==='after Torrent',
+    'source Continue is placed directly after Torrents');
+  assert(sourceButton !== button &&
+    sourceButton.html.indexOf('view--lsp-resume-source')!==-1,
+    'source picker and visible card buttons are distinct DOM elements');
   assert(button.html.indexOf('<svg')!==-1 &&
     button.attrs['aria-label'].indexOf('Продолжить')!==-1,
     'visible action has an icon, description and accessible label');
@@ -127,6 +138,10 @@ function runResumeSmoke(source) {
     'button labels the episode and timecode');
   button['hover:enter']();
   assert(!!played,'native player launch called');
+  played=null;
+  sourceButton['hover:enter']();
+  assert(!!played && played.id===4,'source picker Continue uses the same native torrent resume');
+  assert(sourceEntries.length===1,'source picker has no duplicate after activation');
   assert(played.id===4,'correct torrent file selected');
   assert(played.timeline.time===1120,'resume timecode transferred into timeline');
   assert(Array.isArray(playlist)&&playlist.length===2,'playlist preserved');
@@ -135,7 +150,8 @@ function runResumeSmoke(source) {
   // Completion advances only to a real following episode in this playlist.
   rec.watched_state='completed';
   showCard();
-  assert(!!button,'button remains after completed episode');
+  assert(!!button && !!sourceButton,'both buttons remain after completed episode');
+  assert(sourceEntries.length===1,'card refresh never duplicates the source menu entry');
   button['hover:enter']();
   assert(played.id===5,'completed episode advances to next file');
   assert(played.timeline.time===0,'next episode starts from zero');
@@ -145,11 +161,14 @@ function runResumeSmoke(source) {
       season_index:1,voice_index:2},
     position_seconds:1120,duration_seconds:2400,watched_state:'in_progress',revision:2};
   showCard();
-  assert(!!button && button.value.indexOf('С2E5')>=0,
-    'the same card button supports Lampac online episodes');
+  assert(!!button && sourceButton && button.value.indexOf('С2E5')>=0,
+    'card and source buttons both support Lampac online episodes');
   button['hover:enter']();
   assert(openedOnline===1,'native online action opens');
   assert(selectedOnline[0]===5,'matching online episode auto-selected');
+  onlineMode=false;
+  sourceButton['hover:enter']();
+  assert(selectedOnline[1]===5,'source picker Lampac resume opens matching episode');
   assert(!!seededRoad && seededRoad.hash==='online-hash-5' && seededRoad.time===1120,
     'online resume timeline seeded for the actual selected hash');
   assert(storage.active_balanser==='kodik' && storage.online_balanser==='kodik',
@@ -163,7 +182,7 @@ function runResumeSmoke(source) {
   onlineMode=false;
   showCard();
   button['hover:enter']();
-  assert(selectedOnline[1]===6,'completed online episode advances to the next available episode');
+  assert(selectedOnline[2]===6,'completed online episode advances to the next available episode');
   assert(seededRoad.hash==='online-hash-5','completed next episode does not inherit old timecode');
   rec.watched_state='in_progress';
   win.LampaSyncPro.destroy();
