@@ -76,6 +76,10 @@ function runResumeSmoke(source) {
   }};
   function dom(html){
     if(html && html.nodeMock)return html;
+    if(String(html).indexOf('torrent-files')!==-1) {
+      return {length:1,items:[],kind:'torrent-files',hasClass:function(x){return x==='torrent-files';},
+        append:function(row){this.items.push(row);return this;}};
+    }
     if(String(html).indexOf('view--lsp-resume')!==-1){
       var obj={html:html,attrs:{},value:'',
         find:function(sel){
@@ -290,6 +294,70 @@ function runResumeSmoke(source) {
   assert(!urls.some(function(u){return u.indexOf('/stream?link=')!==-1;}),
     'stream traffic never passes through Supabase');
   androidMode=false;internalTorrent=true;
+  // Fast native-style picker: no second files() request or Lampa 2-second timer.
+  var fastFilesRequests=0,fastOpened=[],fastUpdates=[],fastRows=[],fastEvents=[],fastTemplates=[],fastModalClosed=false;
+  var oldTorFiles=win.Lampa.Torserver.files;
+  var nativeOpens=openedTorrents.length;
+  win.Lampa.Torserver.files=function(h,yes,no){fastFilesRequests++;oldTorFiles(h,yes,no);};
+  win.Lampa.Utils={bytesToSize:function(n){return String(n)+' B';}};
+  win.Lampa.Timeline.render=function(){return '<timeline/>';};
+  win.Lampa.Timeline.link=function(card,s,e){return {card:card,season:s,episode:e};};
+  win.Lampa.Template={get:function(name,file) {
+    fastTemplates.push(name);
+    var obj={length:1,0:{},file:file,listeners:{},attr:function(){return this;},
+      append:function(){return this;},on:function(type,fn){this.listeners[type]=fn;return this;},
+      find:function(){return {append:function(){}};}};
+    fastRows.push(obj);return obj;
+  }};
+  app.send=app.emit;
+  app.follow('torrent_file',function(e){fastEvents.push(e.type);});
+  win.Lampa.Modal.listener=emitter();
+  win.Lampa.Modal.listener.follow('update',function(e) {
+    if(e.new_html && e.new_html.hasClass('torrent-files'))fastUpdates.push(e.new_html);
+  });
+  win.Lampa.Modal.open=function(data){fastOpened.push(data);fastModalClosed=false;};
+  win.Lampa.Modal.update=function(data){win.Lampa.Modal.listener.emit('update',{new_html:data});};
+  win.Lampa.Modal.close=function(){fastModalClosed=true;};
+  win.Lampa.Modal.opened=function(){return !fastModalClosed;};
+  win.Lampa.Favorite={add:function(){}};
+  win.Lampa.Player.callback=function(){};
+  win.Lampa.Controller.toggle=function(){};
+  selectedUI=null;played=null;
+  showCard();
+  button['hover:enter']();
+  assert(fastFilesRequests===1 && openedTorrents.length===nativeOpens,
+    'fast Continue reuses first TorrServer metadata and skips slow native open');
+  assert(fastOpened.length===1 && fastUpdates.length===1,
+    'fast native-styled file window is visible on the first response');
+  assert(fastEvents[0]==='list_open' &&
+    fastEvents.filter(function(x){return x==='render';}).length===2,
+    'NUM receives native list_open and render events');
+  assert(fastTemplates.every(function(x){return x==='torrent_file_serial';}),
+    'native torrent-file-serial templates preserved for NUM');
+  assert(nativeFocused[nativeFocused.length-1]===fastRows[0] &&
+    scrollTargets[scrollTargets.length-1]===fastRows[0],
+    'saved episode receives immediate native focus and scroll');
+  assert(fastRows[0].file.timeline.time===1120 &&
+    fastRows[1].file.timeline.time===0,
+    'cloud checkpoint affects saved episode only');
+  assert(played===null,'loading the list never autoplays an episode');
+  assert(!timers.some(function(t){return t.active&&t.ms===2000;}),
+    'no fixed 2000ms wait on fast path');
+  fastRows[1].listeners['hover:enter']();
+  assert(played && played.id===5 && played.timeline.time===0,
+    'following episode can still be started manually');
+  fastRows[0].listeners['hover:enter']();
+  assert(played && played.id===4 && played.timeline.time===1120 &&
+    playlist.length===2,'saved episode resumes with full playlist');
+  assert(typeof fastRows[0].listeners['hover:long']==='function' &&
+    typeof fastRows[0].listeners['hover:focus']==='function',
+    'native focus and NUM-compatible long-press hooks remain');
+  fastRows[0].listeners['hover:long']();
+  assert(selectedUI && selectedUI.items.length===2,
+    'native long-press still offers timeline actions');
+  fastOpened[0].onBack();
+  assert(fastModalClosed && fastEvents[fastEvents.length-1]==='list_close',
+    'closing the fast picker sends NUM-compatible list_close');
   // Native Lampac online resume remains part of our own Sync Pro button.
   rec={episode_key:'s2:e5',source_key:'lampac:kodik:88',source_kind:'lampac',
     source_recipe:{balanser:'kodik',voice_id:'88',voice_name:'Studio',
