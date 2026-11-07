@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.16-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.17-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.16';
+  var VERSION = '0.1.17';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -449,7 +449,7 @@
     var previousState=getEpisodeState(candidate.media_key,candidate.episode_key);
     if(previousState && (previousState.state==='reset' ||
       previousState.state==='completed'))return false;
-    return markEpisode(candidate.media_key,candidate.episode_key,true);
+    return markEpisode(candidate.media_key,candidate.episode_key,true,'inferred');
   }
   function rememberPlayback(ctx) {
     if(!ctx || !ctx.confirmed || !ctx.session_id)return;
@@ -1033,22 +1033,33 @@
     var key=typeof card==='string'?card:mediaKey(card);
     var ep=str(episode);
     if(!key || !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep))return null;
+    var rows=state.snapshot && state.snapshot.watch_state || [], saved=null;
+    for(var j=0;j<rows.length;j++){
+      if(rows[j].media_key===key && rows[j].episode_key===ep){
+        var row=rows[j];
+        saved={state:row.deleted?'reset':row.state,
+          basis:row.completion_basis || (row.state==='completed'?'legacy':'none'),
+          revision:row.updated_revision};
+        break;
+      }
+    }
     for(var i=state.outbox.length-1;i>=0;i--){
       var e=state.outbox[i];
       if(e.media_key!==key || e.episode_key!==ep)continue;
-      if(e.kind==='marked_complete'||e.kind==='completed')return {state:'completed',pending:true};
-      if(e.kind==='marked_unwatched'||e.kind==='deleted')return {state:'reset',pending:true};
-      if(e.kind==='started'||e.kind==='progress')return {state:'in_progress',pending:true};
+      if(e.kind==='marked_complete')return {state:'completed',
+        basis:e.completion_basis==='inferred'?'inferred':'manual',pending:true};
+      if(e.kind==='completed')return {state:'completed',basis:'playback',pending:true};
+      if(e.kind==='marked_unwatched'||e.kind==='deleted')
+        return {state:'reset',basis:'none',pending:true};
+      if(e.kind==='started'||e.kind==='progress'||e.kind==='paused'||e.kind==='stopped'){
+        // The server keeps completed episodes completed across later playback starts.
+        if(saved && saved.state==='completed')return saved;
+        return {state:'in_progress',basis:'none',pending:true};
+      }
     }
-    var rows=state.snapshot && state.snapshot.watch_state || [];
-    for(var j=0;j<rows.length;j++){
-      var row=rows[j];
-      if(row.media_key===key && row.episode_key===ep)
-        return {state:row.deleted?'reset':row.state,revision:row.updated_revision};
-    }
-    return null;
+    return saved;
   }
-  function markEpisode(card,episode,watched) {
+  function markEpisode(card,episode,watched,basis) {
     if(!loaded || !state.auth || !state.deviceId)return false;
     var key=typeof card==='string'?card:mediaKey(card),ep=str(episode);
     if(!/^(tmdb:(tv|movie):\d{1,12}|imdb:tt\d{1,12}|kinopoisk:\d{1,12})$/.test(key) ||
@@ -1058,6 +1069,7 @@
       device_seq:++state.seq,base_revision:state.revision,
       kind:watched?'marked_complete':'marked_unwatched',
       media_key:key,episode_key:ep};
+    if(watched)event.completion_basis=basis==='inferred'?'inferred':'manual';
     if(!event.event_id)return false;
     state.outbox.push(event);save();notifyState();scheduleSync();
     return true;
