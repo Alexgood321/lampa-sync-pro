@@ -9,10 +9,10 @@
 Адрес для установки через **Lampa → Настройки → Расширения → Добавить**:
 
 ```text
-https://cdn.jsdelivr.net/gh/Alexgood321/lampa-sync-pro@e57c0ff67ccade91e5bee9c31a1b1ca0e2494d1a/lampa-sync-pro.js
+https://cdn.jsdelivr.net/gh/Alexgood321/lampa-sync-pro@47f0970efd98d630013625835fb1b234dd79df54/lampa-sync-pro.js
 ```
 
-Это зафиксированная версия из commit `e57c0ff`; содержимое сохранится при следующих коммитах. Постоянный URL, через который My Store отслеживает актуальный исходник: `https://cdn.jsdelivr.net/gh/Alexgood321/lampa-sync-pro@main/lampa-sync-pro.js`.
+Это зафиксированная версия из commit `47f0970`; содержимое сохранится при следующих коммитах. Постоянный URL, через который My Store отслеживает актуальный исходник: `https://cdn.jsdelivr.net/gh/Alexgood321/lampa-sync-pro@main/lampa-sync-pro.js`.
 
 На старой версии 0.1.0-alpha Lampa показывала статус **500**, потому что JS содержал сокращение `L`, а штатный текстовый анализатор ищет `Lampa.`. В 0.1.1-alpha присутствуют реальные обращения к `Lampa.Plugins`, автоматическое имя установленной записи и реестр запуска. **200 означает только, что текст распознан**, а не доказательство успешного запуска и синхронизации. После замены URL перезапустить Lampa.
 
