@@ -13,6 +13,7 @@ function runResumeSmoke(source) {
       emit:function(n,v){(m[n]||[]).slice().forEach(function(f){f(v);});}};
   }
   var settings={},queue=['test@example.org','password123'],renders=[],urls=[],
+    styleNodes=[],styleById={},
     timers=[],selectedUI=null,openedTorrents=[],nativeFocused=[],scrollTargets=[],
     androidMode=false,internalTorrent=true;
   var app=emitter(),player=emitter(),video=emitter(),tl=emitter();
@@ -28,6 +29,15 @@ function runResumeSmoke(source) {
     played=null,playlist=null,random=0,db={},storage={},
     cardOrder=['native-play','hdrezka-play'],
     openedOnline=0,selectedOnline=[],seededRoad=null,onlineMode=false;
+  function visualOrder() {
+    var rank={'sync-resume':-3,'native-play':-2,'hdrezka-play':-1};
+    return cardOrder.slice().sort(function(a,b){return rank[a]-rank[b];}).join(',');
+  }
+  var fakeDocument={
+    head:{appendChild:function(el){styleNodes.push(el);styleById[el.id]=el;}},
+    getElementById:function(id){return styleById[id] || null;},
+    createElement:function(tag){return {tagName:tag,textContent:''};}
+  };
   var anchor={length:1,last:function(){return this;},
     after:function(b){sourceButton=b;sourceEntries.push(b);sourceMenuPosition='after Torrent';}};
   var playAnchor={length:1,first:function(){return this;},after:function(b){button=b;}};
@@ -77,7 +87,7 @@ function runResumeSmoke(source) {
     return empty;
   }
   var win={
-    appready:true,crypto:{getRandomValues:function(arr){
+    appready:true,document:fakeDocument,crypto:{getRandomValues:function(arr){
       random++;for(var i=0;i<arr.length;i++)arr[i]=random*11+i*17;return arr;}},
     localStorage:{getItem:function(k){return db[k]||null;},
       setItem:function(k,v){db[k]=v;}},
@@ -148,7 +158,20 @@ function runResumeSmoke(source) {
   showCard();
   assert(!!button,'cloud resume button appears directly on the card toolbar');
   assert(cardOrder.join(',')==='sync-resume,native-play,hdrezka-play',
-    'Continue is first; native Play second; HDRezka third');
+    'initial DOM insertion puts Continue first');
+  assert(styleNodes.length===1 && styleNodes[0].id==='lsp-card-action-order',
+    'one persistent stylesheet is installed for asynchronous priority clones');
+  assert(styleNodes[0].textContent.indexOf('.view--lsp-resume{order:-3 !important;}')>=0 &&
+    styleNodes[0].textContent.indexOf('.button--play{order:-2 !important;}')>=0 &&
+    styleNodes[0].textContent.indexOf('.button--priority{order:-1 !important;}')>=0,
+    'flex rules explicitly rank Continue, native Play and pinned source');
+  // Lampa calls onPriorityButton() later and prepends the source clone,
+  // AFTER the resume button was inserted. CSS order must still win.
+  cardOrder=cardOrder.filter(function(x){return x!=='hdrezka-play';});
+  cardOrder.unshift('hdrezka-play');
+  assert(cardOrder[0]==='hdrezka-play' &&
+    visualOrder()==='sync-resume,native-play,hdrezka-play',
+    'late HDRezka priority clone cannot visually overtake Continue');
   assert(!!sourceButton && sourceEntries.length===1,
     'source picker contains one Continue entry');
   assert(sourceMenuPosition==='after Torrent',
@@ -202,8 +225,9 @@ function runResumeSmoke(source) {
   rec.watched_state='completed';
   showCard();
   assert(!!button && !!sourceButton,'both buttons remain after completed episode');
-  assert(cardOrder.join(',')==='sync-resume,native-play,hdrezka-play',
-    'card refresh preserves order and prevents duplicate Continue action');
+  assert(visualOrder()==='sync-resume,native-play,hdrezka-play',
+    'card refresh preserves visual order after late pinned source');
+  assert(styleNodes.length===1,'card refresh never duplicates the CSS order rules');
   assert(sourceEntries.length===1,'card refresh never duplicates the source entry');
   button['hover:enter']();
   assert(openedTorrents.length===3 && played===null,
