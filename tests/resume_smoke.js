@@ -170,6 +170,16 @@ function runResumeSmoke(source) {
     styleNodes[0].textContent.indexOf('.button--play{order:-2 !important;}')>=0 &&
     styleNodes[0].textContent.indexOf('.button--priority{order:-1 !important;}')>=0,
     'flex rules explicitly rank Continue, native Play and pinned source');
+  assert(styleNodes[0].textContent.includes('.view--lsp-resume:not(.focus)') &&
+    styleNodes[0].textContent.includes('background-color:#168c58 !important;color:#fff !important;'),
+    'Continue primary button uses green background and white foreground');
+  assert(styleNodes[0].textContent.includes('.view--lsp-resume.focus') &&
+    styleNodes[0].textContent.includes('background-color:#fff !important;color:#117b4a !important;'),
+    'focused Continue button has readable high-contrast inverted colors');
+  assert(styleNodes[0].textContent.includes('width:1.5em !important;height:1.5em !important;'),
+    'Continue svg is sized exactly as native Lampa button glyphs');
+  assert(!styleNodes[0].textContent.includes('.view--lsp-resume-source:not(.focus)'),
+    'native source picker retains its standard Lampa button color');
   // Lampa calls onPriorityButton() later and prepends the source clone,
   // AFTER the resume button was inserted. CSS order must still win.
   cardOrder=cardOrder.filter(function(x){return x!=='hdrezka-play';});
@@ -184,9 +194,13 @@ function runResumeSmoke(source) {
   assert(sourceButton !== button &&
     sourceButton.html.indexOf('view--lsp-resume-source')!==-1,
     'source picker and visible card buttons are distinct DOM elements');
-  assert(button.html.indexOf('<svg')!==-1 &&
+  assert(button.html.indexOf('<svg viewBox="0 0 32 32"')!==-1 &&
+    button.html.includes('stroke-width="2.7"') &&
+    button.html.includes('m13 11 9 5-9 5z') &&
     button.attrs['aria-label'].indexOf('Продолжить')!==-1,
-    'visible action has an icon, description and accessible label');
+    'Continue has a full-size play-and-resume SVG with an accessible label');
+  assert(sourceButton.html.includes('viewBox="0 0 32 32"'),
+    'menu entry uses the same balanced SVG');
   assert(button.html.indexOf('view--lsp-resume')!==-1,
     'card action uses its own class, separate from native source selection');
   assert(typeof button['hover:enter']==='function','button has action');
