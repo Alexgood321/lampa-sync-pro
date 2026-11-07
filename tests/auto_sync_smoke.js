@@ -1,5 +1,5 @@
 /*
- * Cross-device foreground / periodic sync regression.
+ * Foreground and offline-safe REST fallback without periodic polling.
  * Execute: node tests/auto_sync_smoke.js
  */
 function runAutoSyncSmoke(source) {
@@ -68,8 +68,9 @@ function runAutoSyncSmoke(source) {
   new Function('window','XMLHttpRequest','setTimeout','clearTimeout',
     'setInterval','clearInterval','Date',source)(win,Xhr,function(){return 1;},function(){},
     setFakeInterval,function(){},FakeDate);
-  check(intervals.length===1 && intervals[0].delay===30000,
-    'cloud polling runs every 30 seconds');
+  check(intervals.length===0,'no periodic HTTP polling');
+  check(win.LampaSyncPro.status().realtime==='disconnected' ||
+    win.LampaSyncPro.status().realtime==='unsupported','no WebSocket gracefully degrades');
   check(events.size('focus')===1 && events.size('pageshow')===1,
     'window foreground hooks registered');
   check(documentEvents.size('visibilitychange')===1,'visibility hook registered');
@@ -96,12 +97,7 @@ function runAutoSyncSmoke(source) {
   documentEvents.fire('visibilitychange');
   check(snaps()===6,'visible transition refreshes cloud');
   now+=30000;
-  intervals[0].fn();
-  check(snaps()===8,'automatic 30-second refresh works');
-  document.visibilityState='hidden';
-  now+=30000;
-  intervals[0].fn();
-  check(snaps()===8,'periodic cloud refresh pauses in background');
+  check(intervals.length===0 && snaps()===6,'no time-based cloud pull when idle');
   document.visibilityState='visible';
   win.LampaSyncPro.destroy();
   check(events.size('focus')===0 && events.size('pageshow')===0,
@@ -110,7 +106,7 @@ function runAutoSyncSmoke(source) {
     'document event listener cleaned up');
   now+=60000;
   events.fire('focus');
-  check(snaps()===8,'destroyed instance never syncs again');
+  check(snaps()===6,'destroyed instance never syncs again');
   return {passed:passed};
 }
 if(typeof module!=='undefined' && module.exports) {
