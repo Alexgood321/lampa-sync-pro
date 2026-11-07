@@ -187,6 +187,9 @@ function runRealtimeSmoke(source) {
     !win.LampaSyncPro.markEpisode('tmdb:tv:288673','s1:e0',true),
     'invalid media and episode identities rejected');
 
+  // This suite tests Realtime/online independence. Auto-completion is exercised
+  // with separate consecutive-episode regression tests.
+  storage.lsp_auto_next_complete=false;
   // Online Lampa playback uses provider/voice metadata, never playback stream URLs.
   storage.active_balanser='kodik';
   storage.online_choice_kodik={288673:{season:0,voice:2,voice_id:'g.12',voice_name:'Dub'}};
