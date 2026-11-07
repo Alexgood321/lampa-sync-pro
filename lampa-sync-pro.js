@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.11-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.12-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.11';
+  var VERSION = '0.1.12';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1104,6 +1104,41 @@
     }
     return null;
   }
+  // Lampa's Start.Buttons.onGroupButtons() asynchronously calls
+  // onPriorityButton(), which PREPENDS a cloned source button every time
+  // the screen is toggled. DOM prepend alone cannot keep Continue first.
+  // Flex order survives later priority clones, and preserves other plugins.
+  function enforceCardActionOrder(toolbar,action) {
+    var css=
+      '.full-start-new__buttons > .view--lsp-resume,'+
+      '.full-start__buttons > .view--lsp-resume{order:-3 !important;}'+
+      '.full-start-new__buttons > .button--play,'+
+      '.full-start__buttons > .button--play{order:-2 !important;}'+
+      '.full-start-new__buttons > .button--priority,'+
+      '.full-start__buttons > .button--priority{order:-1 !important;}';
+    var doc=win.document, el=null;
+    if (doc && typeof doc.createElement==='function') {
+      try {
+        el=typeof doc.getElementById==='function' ?
+          doc.getElementById('lsp-card-action-order') : null;
+        if (!el) {
+          el=doc.createElement('style');
+          el.id='lsp-card-action-order';
+          var holder=doc.head || doc.documentElement || doc.body;
+          if (holder && typeof holder.appendChild==='function')holder.appendChild(el);
+        }
+        if(el && el.textContent!==css)el.textContent=css;
+      }catch(ignore){}
+    }
+    // Inline order also supports nonstandard full-screen themes.
+    function order(elements,value) {
+      if(elements && elements.length && typeof elements.css==='function')
+        elements.css('order',String(value));
+    }
+    order(action,-3);
+    order(toolbar.find('.button--play'),-2);
+    order(toolbar.find('.button--priority'),-1);
+  }
   function updateFull(e) {
     if (!state.auth || !e || e.type!=='complite') return;
     var card = e.data && e.data.movie;
@@ -1140,13 +1175,14 @@
       button.on('hover:enter',resumeAction);
       return button;
     }
-    // Always put Continue first; preserve the native Play and other
-    // extensions' relative order. Never modify HDRezka-owned buttons.
+    // Keep Continue first even after Lampa re-prepends a pinned source.
+    // Other extensions retain their own handlers and relative order.
     var toolbar=root.find('.full-start-new__buttons').last();
     if (!toolbar.length) toolbar=root.find('.full-start__buttons').last();
     if (toolbar.length) {
       var action=createResumeButton('view--lsp-resume');
       toolbar.prepend(action);
+      enforceCardActionOrder(toolbar,action);
     }
     // Second entry in Lampa's native source picker. The picker enumerates
     // direct children of hidden .buttons--container; this must be inserted
