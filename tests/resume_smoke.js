@@ -299,14 +299,25 @@ function runResumeSmoke(source) {
   var oldTorFiles=win.Lampa.Torserver.files;
   var nativeOpens=openedTorrents.length;
   win.Lampa.Torserver.files=function(h,yes,no){fastFilesRequests++;oldTorFiles(h,yes,no);};
-  win.Lampa.Utils={bytesToSize:function(n){return String(n)+' B';}};
+  win.Lampa.Utils={bytesToSize:function(n){return String(n)+' B';},
+    parseTime:function(x){return {full:'Дата '+x};}};
   win.Lampa.Timeline.render=function(){return '<timeline/>';};
   win.Lampa.Timeline.link=function(card,s,e){return {card:card,season:s,episode:e};};
   win.Lampa.Template={get:function(name,file) {
     fastTemplates.push(name);
-    var obj={length:1,0:{},file:file,listeners:{},attr:function(){return this;},
+    var titleNode={value:'',text:function(v){this.value=v;return this;}};
+    var dateNode={value:'',text:function(v){this.value=v;return this;}};
+    var imgNode={length:1,attrs:{},0:{},addClass:function(){return this;},
+      attr:function(k,v){if(arguments.length===1)return this.attrs[k];this.attrs[k]=v;return this;}};
+    var obj={length:1,0:{},file:file,titleNode:titleNode,dateNode:dateNode,
+      imgNode:imgNode,listeners:{},attr:function(){return this;},
       append:function(){return this;},on:function(type,fn){this.listeners[type]=fn;return this;},
-      find:function(){return {append:function(){}};}};
+      find:function(sel){
+        if(sel==='.torrent-serial__title')return titleNode;
+        if(sel==='.torrent-serial__line span')return {last:function(){return dateNode;}};
+        if(sel==='img')return imgNode;
+        return {append:function(){}};
+      }};
     fastRows.push(obj);return obj;
   }};
   app.send=app.emit;
@@ -322,6 +333,9 @@ function runResumeSmoke(source) {
   win.Lampa.Favorite={add:function(){}};
   win.Lampa.Player.callback=function(){};
   win.Lampa.Controller.toggle=function(){};
+  var seasonCall=null,seasonRequests=0,seasonNumbers=[];
+  win.Lampa.Api={img:function(path){return 'https://image.tmdb.org/t/p/w500'+path;},
+    seasons:function(movie,numbers,done){seasonRequests++;seasonNumbers=numbers;seasonCall=done;}};
   selectedUI=null;played=null;
   showCard();
   button['hover:enter']();
@@ -329,6 +343,31 @@ function runResumeSmoke(source) {
     'fast Continue reuses first TorrServer metadata and skips slow native open');
   assert(fastOpened.length===1 && fastUpdates.length===1,
     'fast native-styled file window is visible on the first response');
+  assert(seasonRequests===1 && seasonNumbers.length===1 && seasonNumbers[0]===2,
+    'season metadata requested asynchronously once after initial file window');
+  assert(fastRows[0].titleNode.value==='' && 
+    fastRows[0].imgNode.attr('data-src')===undefined,
+    'initial file window does not wait for season images to download');
+  seasonCall({2:{episodes:[
+    {episode_number:5,name:'Сохранённая серия',still_path:'/still5.jpg',
+      air_date:'2026-10-20',runtime:44},
+    {episode_number:6,name:'Следующая серия',still_path:'/still6.jpg',
+      air_date:'2026-10-27',runtime:42}
+  ]}});
+  assert(fastRows[0].titleNode.value==='Сохранённая серия' &&
+    fastRows[1].titleNode.value==='Следующая серия',
+    'TMDB titles hydrate in place on the already visible file rows');
+  assert(fastRows[0].dateNode.value==='Выход - Дата 2026-10-20' &&
+    fastRows[1].file.air_date==='Дата 2026-10-27',
+    'release dates come from TMDB season details');
+  assert(fastRows[0].imgNode.attr('data-src')==='https://image.tmdb.org/t/p/w500/still5.jpg' &&
+    fastRows[1].file.thumbnail==='https://image.tmdb.org/t/p/w500/still6.jpg',
+    'both episode preview stills and thumbnail metadata are restored');
+  assert(fastRows[1].imgNode.attr('src')===
+    'https://image.tmdb.org/t/p/w500/still6.jpg',
+    'preview is refreshed without waiting for additional scrolling');
+  assert(seasonRequests===1,'season details are fetched only once per fast picker');
+
   assert(fastEvents[0]==='list_open' &&
     fastEvents.filter(function(x){return x==='render';}).length===2,
     'NUM receives native list_open and render events');
@@ -358,6 +397,10 @@ function runResumeSmoke(source) {
   fastOpened[0].onBack();
   assert(fastModalClosed && fastEvents[fastEvents.length-1]==='list_close',
     'closing the fast picker sends NUM-compatible list_close');
+  seasonCall({2:{episodes:[{episode_number:5,name:'Не должна появиться',
+    still_path:'/stale.jpg'}]}});
+  assert(fastRows[0].titleNode.value==='Сохранённая серия',
+    'late season response after closing the modal cannot modify old rows');
   // Safety: if a custom Lampa skin lacks a working torrent template,
   // Continue falls back to the original native picker, without blank UI.
   var previousTemplate=win.Lampa.Template.get;
