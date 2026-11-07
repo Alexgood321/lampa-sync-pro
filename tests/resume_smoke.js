@@ -169,13 +169,15 @@ function runResumeSmoke(source) {
   assert(played===null,'Continue never autoplays the saved episode');
   assert(openedTorrents[0].hash===rec.source_recipe.infohash,
     'same saved torrent infohash is used');
-  var savedItem={0:{offsetParent:{}}};
+  var savedItem={0:{offsetParent:{}}},savedNativeRoad={hash:'native-hash',time:0,duration:0,percent:0};
   app.emit('torrent_file',{type:'render',element:{id:4,path:'S02E05.mkv',
-    season:2,episode:5,torrent_hash:rec.source_recipe.infohash},
+    season:2,episode:5,torrent_hash:rec.source_recipe.infohash,timeline:savedNativeRoad},
     item:savedItem,params:{movie:movie}});
   flushTimer(80);
   assert(nativeFocused[0]===savedItem && scrollTargets[0]===savedItem,
     'native file list focuses and scrolls to the saved episode');
+  assert(savedNativeRoad.time===1120 && savedNativeRoad.duration===2700,
+    'cloud checkpoint is added only to chosen player item, not global Timeline');
   assert(played===null,'focusing a series row does not launch playback');
   sourceButton['hover:enter']();
   assert(openedTorrents.length===2,'source menu Continue opens the same torrent cards');
@@ -199,6 +201,12 @@ function runResumeSmoke(source) {
   button['hover:enter']();
   assert(openedTorrents.length===3 && played===null,
     'completed series still offers choice of saved or next episode, not autoplay');
+  var completedNativeRoad={time:2500,duration:2700,percent:93};
+  app.emit('torrent_file',{type:'render',element:{id:4,path:'S02E05.mkv',
+    season:2,episode:5,torrent_hash:rec.source_recipe.infohash,timeline:completedNativeRoad},
+    item:{0:{offsetParent:{}}},params:{movie:movie}});
+  assert(completedNativeRoad.time===0,
+    'replaying the completed saved file starts at zero rather than end credits');
   // Android external torrent mode uses native Lampa Select, because
   // Torrent.open would directly run Android.playHash without file selection.
   androidMode=true;internalTorrent=false;
@@ -212,8 +220,14 @@ function runResumeSmoke(source) {
   assert(!!played && played.id===5 && played.timeline.time===0,
     'user can select the next episode, which starts at zero');
   selectedUI.items[0].onSelect();
+  assert(played.id===4 && played.timeline.time===0,
+    'manually replaying completed episode starts at zero');
+  rec.watched_state='in_progress';
+  showCard();
+  sourceButton['hover:enter']();
+  selectedUI.items[0].onSelect();
   assert(played.id===4 && played.timeline.time===1120,
-    'manual choice of saved episode resumes at confirmed timecode');
+    'manually choosing an unfinished episode restores the cloud checkpoint');
   assert(Array.isArray(playlist) && playlist.length===2,
     'fallback picker preserves the native player playlist');
   androidMode=false;internalTorrent=true;
