@@ -24,7 +24,7 @@
   var lastSuccessfulSync = 0;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
-  var resumeOverrides = {}, stateListeners = [];
+  var resumeOverrides = {}, stateListeners = [], onlineResumeTimer=null;
   // Supabase Realtime Phoenix 1.0.0; only the per-user revision head is replicated.
   var rtSocket=null, rtAccount='', rtTopic='', rtJoinRef='', rtRef=0;
   var rtJoined=false, rtStarting=false, rtState='disconnected', rtAttempt=0;
@@ -1035,10 +1035,13 @@
     if (!key || !root || typeof win.$!=='function') return;
     root.find('.view--lsp-resume').remove();
     var rec=findCachedResume(key);
-    if (!rec || rec.source_kind!=='torrent') return;
+    if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) return;
     var button=win.$('<div class="full-start__button selector view--lsp-resume"></div>');
     button.text(labelResume(rec));
-    button.on('hover:enter',function() { resumeTorrent(card,rec); });
+    button.on('hover:enter',function() {
+      if (rec.source_kind==='torrent') resumeTorrent(card,rec);
+      else resumeOnline(card,rec,e);
+    });
     var where=root.find('.view--torrent').last();
     if (!where.length) where=root.find('.view--online').last();
     if (where.length) where.after(button);
@@ -1060,6 +1063,92 @@
       resumeOverrides[key]=rec || null;
       updateFull(e);
     });
+  }
+  function stopOnlineResume() {
+    if(onlineResumeTimer){clearInterval(onlineResumeTimer);onlineResumeTimer=null;}
+  }
+  function onlinePrefs(card,recipe) {
+    if(!L.Storage || typeof L.Storage.get!=='function' ||
+      typeof L.Storage.set!=='function')return false;
+    var b=str(recipe && recipe.balanser);
+    if(!/^[A-Za-z0-9_.-]{1,64}$/.test(b) || !card || card.id==null)return false;
+    function object(key) {
+      var item=L.Storage.get(key,{}) || {};
+      if(typeof item==='string'){try{item=JSON.parse(item);}catch(ignore){item={};}}
+      return item && typeof item==='object' && !Array.isArray(item) ? item : {};
+    }
+    try{
+      var last=object('online_last_balanser');
+      last[card.id]=b;
+      L.Storage.set('online_last_balanser',last);
+      L.Storage.set('online_balanser',b);
+      L.Storage.set('active_balanser',b);
+      var key='online_choice_'+b, choices=object(key), prev=choices[card.id] || {};
+      choices[card.id]={
+        season:Math.max(0,Math.floor(number(recipe.season_index))),
+        voice:Math.max(0,Math.floor(number(recipe.voice_index))),
+        voice_id:str(recipe.voice_id),voice_name:str(recipe.voice_name),
+        episodes_view:prev.episodes_view || {},movie_view:prev.movie_view || ''
+      };
+      L.Storage.set(key,choices);
+      return true;
+    }catch(ignore){return false;}
+  }
+  function resumeOnline(card,rec,fullEvent) {
+    if(!rec || rec.source_kind!=='lampac' || !onlinePrefs(card,rec.source_recipe))
+      return note('Онлайн-источник недоступен для восстановления');
+    var root=fullRoot(fullEvent);
+    if(!root)return note('Не удалось открыть онлайн-раздел');
+    var action=root.find('.view--online').last();
+    if(!action || !action.length || typeof action.trigger!=='function')
+      return note('Онлайн-раздел недоступен');
+    stopOnlineResume();
+    var match=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
+    if(!match) {action.trigger('hover:enter');return;}
+    var desired=Number(match[2]),season=Number(match[1]),completed=rec.watched_state==='completed';
+    var launched=false,startedAt=Date.now();
+    function scan() {
+      if(STOPPED || launched || Date.now()-startedAt>18000){
+        stopOnlineResume();
+        if(!launched && !STOPPED)note('Не удалось найти серию. Выберите её вручную');
+        return;
+      }
+      if(!L.Activity || typeof L.Activity.active!=='function' || typeof win.$!=='function')return;
+      var current=L.Activity.active() || {};
+      if(current.component!=='lampac' || !current.activity ||
+        typeof current.activity.render!=='function')return;
+      var panel=current.activity.render();
+      if(!panel || typeof panel.find!=='function')panel=win.$(panel);
+      if(!panel || typeof panel.find!=='function')return;
+      var episodes=panel.find('.online-prestige--full');
+      if(!episodes || !episodes.length || typeof episodes.each!=='function')return;
+      var selected=null,next=null;
+      episodes.each(function(i,node){
+        var item=win.$(node);
+        var text=str(item.find('.online-prestige__episode-number').text());
+        var parsed=Number(text);
+        if(parsed!==desired && (!completed || parsed!==desired+1))return;
+        if(parsed===desired)selected=item;
+        if(parsed===desired+1)next=item;
+      });
+      if(completed && next)selected=next;
+      if(!selected || typeof selected.trigger!=='function')return;
+      var hash=selected.find('.time-line').attr('data-hash');
+      var seconds=completed && next ? 0 : Math.floor(number(rec.position_seconds));
+      var duration=Math.floor(number(rec.duration_seconds));
+      // Only seed a verified playlist hash; never overwrite an unrelated Timeline.
+      if(hash && seconds>0 && L.Timeline && typeof L.Timeline.update==='function'){
+        try{L.Timeline.update({hash:hash,time:seconds,duration:duration,
+          percent:duration>0?Math.min(100,seconds/duration*100):0});}catch(ignore){}
+      }
+      launched=true;stopOnlineResume();
+      try{selected.trigger('hover:enter');}catch(ignore){note('Не удалось открыть серию');}
+    }
+    // This short-lived scan watches the provider UI after a user click.
+    // It is not a network poll or a cloud synchronization interval.
+    onlineResumeTimer=setInterval(scan,180);
+    try{action.trigger('hover:enter');scan();}
+    catch(ignore){stopOnlineResume();note('Онлайн-раздел не открылся');}
   }
   function normalPath(v) { return str(v).replace(/\\/g,'/').replace(/^\/+/,'').toLowerCase(); }
   function torFiles(hash,cb) {
@@ -1278,6 +1367,7 @@
   function destroy() {
     STOPPED=true;
     realtimeStop();
+    stopOnlineResume();
     clearTorrPoll();
     if (sendTimer) clearTimeout(sendTimer);
     subscriptions.forEach(function(s) {
