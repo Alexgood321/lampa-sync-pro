@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.1-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.2-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.1';
+  var VERSION = '0.1.2';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -22,9 +22,10 @@
   var subscriptions = [], interval = null, sendTimer = null;
   var networkBusy = false, refreshing = false, refreshWaiters = [];
   var retryAfter = 0, active = null, staged = null, currentFull = null;
+  var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
   var resumeOverrides = {};
   var state = { schema: 1, userId: '', auth: null, deviceId: '', seq: 0,
-    revision: 0, snapshot: null, outbox: [] };
+    revision: 0, snapshot: null, outbox: [], lastTorrent: null };
 
   function number(value) {
     var x = Number(value);
@@ -56,7 +57,7 @@
   function snapshotState() {
     return { schema: 1, userId: state.userId, auth: state.auth, deviceId: state.deviceId,
       seq: state.seq, revision: state.revision, snapshot: state.snapshot,
-      outbox: state.outbox.slice() };
+      outbox: state.outbox.slice(), lastTorrent: state.lastTorrent };
   }
   function fallbackLoad(cb) {
     storageMode = 'localstorage';
@@ -101,10 +102,18 @@
     state.seq = Math.max(0, Math.floor(number(s.seq)));
     state.revision = Math.max(0, Math.floor(number(s.revision)));
     state.snapshot = s.snapshot && s.snapshot.status === 'ok' ? s.snapshot : null;
+    var record = s.lastTorrent;
+    if (record && validUUID(record.session_id) &&
+        /^tmdb:(tv|movie):\d{1,12}$|^imdb:tt\d{1,12}$|^kinopoisk:\d{1,12}$/.test(str(record.media_key)) &&
+        /^(movie|s\d{1,3}:e\d{1,4})$/.test(str(record.episode_key)) &&
+        record.recipe && /^[A-F0-9]{40}$|^[A-Z2-7]{32}$/.test(str(record.recipe.infohash)) &&
+        number(record.updated_at)>Date.now()-6*60*60*1000) {
+      state.lastTorrent = record;
+    }
     state.outbox = Array.isArray(s.outbox) ? s.outbox.filter(function (e) {
       return e && e.schema === 1 && validUUID(e.event_id) && validUUID(e.device_id);
     }).slice(-750) : [];
-    if (!state.auth || !state.userId) { state.auth = null; state.userId = ''; state.outbox = []; state.snapshot = null; state.revision = 0; }
+    if (!state.auth || !state.userId) { state.auth = null; state.userId = ''; state.outbox = []; state.snapshot = null; state.revision = 0; state.lastTorrent=null; }
   }
   function request(method, path, payload, token, done) {
     var xhr = new XMLHttpRequest();
@@ -145,6 +154,9 @@
       state.snapshot = null;
       state.seq = 0;
       state.deviceId = uuid();
+      state.lastTorrent=null;
+      lastTorrent=null;
+      clearTorrPoll();
     }
     state.userId = user;
     state.auth = { access_token: data.access_token, refresh_token: data.refresh_token,
@@ -211,11 +223,14 @@
     });
   }
   function logout() {
+    clearTorrPoll();
+    lastTorrent=null;
     var oldJwt = state.auth && state.auth.access_token;
     state.auth = null;
     state.userId = '';
     state.outbox = [];
     state.snapshot = null;
+    state.lastTorrent=null;
     state.revision = 0;
     state.seq = 0;
     state.deviceId = uuid();
@@ -327,6 +342,7 @@
     if (p < 0 || p > 86400 || dur < 0 || dur > 86400) return;
     if (dur) active.duration = Math.round(dur);
     active.position = Math.max(0,Math.round(p));
+    if (active.position>0) active.hasPlayerProgress=true;
     checkpoint(active,'progress',false);
   }
   function subscribe(listener,kind,handler) {
@@ -349,9 +365,153 @@
     }
     active.confirmed = true;
     active.external = external;
+    active.owner = state.userId;
+    lastTorrent=active;
+    rememberLastTorrent(active);
     if (d.timeline && number(d.timeline.time) >= 0) active.position = Math.round(number(d.timeline.time));
     if (d.timeline && number(d.timeline.duration) > 0) active.duration = Math.round(number(d.timeline.duration));
     newEvent(active,'started');
+    startTorrPoll(active);
+  }
+
+  function clearTorrPoll() {
+    if (torrPoll) { clearInterval(torrPoll); torrPoll=null; }
+  }
+  function rememberLastTorrent(ctx) {
+    if (!ctx || !ctx.session_id || !ctx.recipe) return;
+    state.lastTorrent = {
+      media_key:ctx.media_key,episode_key:ctx.episode_key,recipe:ctx.recipe,
+      session_id:ctx.session_id,updated_at:Date.now(),
+      position:Math.round(ctx.position||0),duration:Math.round(ctx.duration||0)
+    };
+    save();
+  }
+  function restoreLastTorrent() {
+    var data=state.lastTorrent;
+    if (!data || !state.auth || !state.userId) return;
+    if (!data.recipe || !data.recipe.infohash) return;
+    lastTorrent={media_key:data.media_key,episode_key:data.episode_key,
+      recipe:data.recipe,session_id:data.session_id,
+      confirmed:true,external:true,owner:state.userId,
+      position:Math.max(0,number(data.position)),
+      duration:Math.max(0,number(data.duration)),lastSent:0,completed:false};
+  }
+  function trackTimecodeEnabled() {
+    if (!L.Storage) return false;
+    try {
+      var val=typeof L.Storage.field==='function' ?
+        L.Storage.field('torrserver_tracktimecode') :
+        L.Storage.get('torrserver_tracktimecode',false);
+      return val===true || val==='true';
+    } catch(e){ return false; }
+  }
+  function viewedRequest(hash,callback) {
+    if (!trackTimecodeEnabled())
+      return callback(new Error('Включите TrackTimecode в Lampa'));
+    if (!L.Torserver) return callback(new Error('TorrServer недоступен'));
+    var responded=false,timeout=setTimeout(function(){
+      deliver(new Error('Нет ответа /viewed'));
+    },6500);
+    function deliver(error,response) {
+      if (responded || STOPPED) return;
+      responded=true;
+      clearTimeout(timeout);
+      if (error) return callback(error);
+      var list=response;
+      if (typeof list==='string') {
+        try { list=JSON.parse(list); } catch (e) { list=null; }
+      }
+      if (!Array.isArray(list)) return callback(new Error('Неверный ответ /viewed'));
+      callback(null,list);
+    }
+    try {
+      if (typeof L.Torserver.viewed==='function') {
+        L.Torserver.viewed(hash,function(items){deliver(null,items);},function(){deliver(new Error('Ошибка /viewed'));});
+      } else if (typeof L.Reguest==='function' && typeof L.Torserver.url==='function') {
+        var request=new L.Reguest();
+        if (typeof request.timeout==='function') request.timeout(6000);
+        request.silent(L.Torserver.url()+'/viewed',function(items){deliver(null,items);},
+          function(){deliver(new Error('Ошибка /viewed'));},
+          JSON.stringify({action:'list',hash:hash}));
+      } else {
+        deliver(new Error('Нет API /viewed'));
+      }
+    } catch(e) { deliver(new Error('Не удалось запросить /viewed')); }
+  }
+  function knownCloudPosition(ctx) {
+    var records=state.snapshot && state.snapshot.source_progress || [];
+    var key='torrent:'+str(ctx.recipe.infohash).toUpperCase()+':'+String(ctx.recipe.file_index);
+    var pos=0;
+    for (var i=0;i<records.length;i++){
+      var row=records[i];
+      if (row.media_key===ctx.media_key && row.episode_key===ctx.episode_key &&
+        row.source_key===key && !row.deleted) {
+        pos=Math.max(0,number(row.position_seconds));
+        if (!ctx.duration && number(row.duration_seconds)>0)
+          ctx.duration=Math.round(number(row.duration_seconds));
+        break;
+      }
+    }
+    return pos;
+  }
+  function captureTorrViewed(ctx,kind,manual,done) {
+    done=typeof done==='function' ? done : function() {};
+    if (!ctx || !ctx.confirmed || !state.auth || !option('capture',true))
+      return done(new Error('Просмотр не активен'));
+    if (ctx.owner!==state.userId || (active && active!==ctx))
+      return done(new Error('Изменился сеанс просмотра'));
+    if (!ctx.recipe || !/^([0-9A-F]{40}|[A-Z2-7]{32})$/.test(str(ctx.recipe.infohash).toUpperCase()) ||
+        !isFinite(Number(ctx.recipe.file_index)) ||
+        Number(ctx.recipe.file_index)<1) return done(new Error('Неизвестен файл торрента'));
+    if (ctx.viewedPending) return done(new Error('Проверка уже выполняется'));
+    ctx.viewedPending=true;
+    var owner=state.userId, session=ctx.session_id;
+    viewedRequest(ctx.recipe.infohash,function(err,list) {
+      ctx.viewedPending=false;
+      if (owner!==state.userId || session!==ctx.session_id || (active && active!==ctx))
+        return done(new Error('Сеанс завершён'));
+      if (err) { torrStatus=err.message;return done(err); }
+      var row=null, fileId=Number(ctx.recipe.file_index);
+      for (var i=0;i<list.length;i++) {
+        var item=list[i];
+        if (item && Number(item.file_index)===fileId &&
+           str(item.hash).toUpperCase()===str(ctx.recipe.infohash).toUpperCase()) {
+          row=item;break;
+        }
+      }
+      var seconds=row && Number(row.timecode);
+      if (!isFinite(seconds) || seconds<=0 || seconds>86400) {
+        torrStatus='empty';
+        return done(null,0);
+      }
+      seconds=Math.round(seconds);
+      var previous=ctx.viewedLastSeen;
+      ctx.viewedLastSeen=seconds;
+      torrStatus='timecode:'+seconds;
+      if (ctx.hasPlayerProgress) return done(null,seconds);
+      // Do not interpret an unchanged old TorrServer checkpoint as a newer seek.
+      var cloud=knownCloudPosition(ctx);
+      var changed=previous!==undefined && previous!==seconds;
+      var newlyAvailable=previous===undefined && seconds>cloud &&
+        (!ctx.position || seconds>ctx.position);
+      if ((changed || newlyAvailable) && seconds!==ctx.viewedLastEmitted) {
+        ctx.position=seconds;
+        ctx.viewedLastEmitted=seconds;
+        checkpoint(ctx,kind==='stopped'?'stopped':'progress',true);
+        rememberLastTorrent(ctx);
+      }
+      done(null,seconds);
+    });
+  }
+  function startTorrPoll(ctx) {
+    clearTorrPoll();
+    if (!trackTimecodeEnabled() || !ctx || !ctx.confirmed) return;
+    setTimeout(function(){
+      if (!STOPPED && ctx===active) captureTorrViewed(ctx,'progress',false,function(){});
+    },1500);
+    torrPoll=setInterval(function(){
+      if (!STOPPED && ctx===active) captureTorrViewed(ctx,'progress',false,function(){});
+    },15000);
   }
   function installCapture() {
     if (!L.Player || !L.Player.listener) return;
@@ -361,6 +521,7 @@
       staged = { file: file, card: file.card || e.params && e.params.movie, at: Date.now() };
     });
     subscribe(L.Player.listener,'create',function(e) {
+      clearTorrPoll();
       active = makeContext(e && e.data || e);
     });
     subscribe(L.Player.listener,'start',function(e) {
@@ -370,9 +531,20 @@
       startCapture(e && e.data || e,true);
     });
     subscribe(L.Player.listener,'destroy',function() {
-      checkpoint(active,'stopped',true);
-      active = null;
-      staged = null;
+      var ctx=active;
+      clearTorrPoll();
+      active=null;
+      staged=null;
+      if (ctx && ctx.confirmed) {
+        if (ctx.external && !ctx.position) {
+          captureTorrViewed(ctx,'stopped',false,function() {});
+          // External players may persist their timecode after the stream closes.
+          setTimeout(function() {
+            if (!STOPPED && state.userId===ctx.owner && !active && lastTorrent===ctx)
+              captureTorrViewed(ctx,'stopped',false,function() {});
+          },2500);
+        } else if (ctx.position>0) checkpoint(ctx,'stopped',true);
+      }
     });
     if (L.PlayerVideo && L.PlayerVideo.listener) {
       subscribe(L.PlayerVideo.listener,'timeupdate',updateProgress);
@@ -393,6 +565,7 @@
         if (p<0 || p>86400 || dur<0 || dur>86400) return;
         active.position = Math.round(p);
         if (dur>0) active.duration = Math.round(dur);
+        if (active.position>0) active.hasPlayerProgress=true;
         checkpoint(active,'progress',false);
       });
     }
@@ -454,7 +627,7 @@
       flushQueue(done,owner);
     });
   }
-  function sync(userInitiated) {
+  function sync(userInitiated, skipTorrRead) {
     if (STOPPED || !loaded || !state.auth) {
       if (userInitiated) note('Сначала войдите в аккаунт');
       return;
@@ -464,6 +637,12 @@
       return;
     }
     if (!userInitiated && Date.now()<retryAfter) return;
+    if (userInitiated && !skipTorrRead && lastTorrent &&
+        state.userId===lastTorrent.owner) {
+      return captureTorrViewed(lastTorrent,'progress',true,function() {
+        sync(true,true);
+      });
+    }
     networkBusy = true;
     var owner = state.userId;
     readSnapshot(function(error) {
@@ -659,7 +838,7 @@
     return {version:VERSION,ready:loaded,authenticated:!!state.auth,
       email:state.auth && state.auth.email || '',revision:state.revision,
       queued:state.outbox.length,device:state.deviceId,storage:storageMode,
-      capture:option('capture',true),busy:networkBusy};
+      capture:option('capture',true),busy:networkBusy,torrserver:torrStatus};
   }
   // Native Lampa and My Store recognize plugin source by the real Lampa. API usage.
   // Only update metadata of this own installation; never change other plugins.
@@ -708,6 +887,16 @@
     button('lsp_login','Войти','Email и пароль Supabase Auth',function(){login(false);});
     button('lsp_register','Зарегистрироваться','При включённой проверке email придёт письмо',function(){login(true);});
     button('lsp_sync_now','Синхронизировать сейчас','Загрузить изменения и отправить очередь',function(){sync(true);});
+    button('lsp_torrserver_check','Проверить таймкод TorrServer',
+      'Считать /viewed последнего воспроизведённого торрента',function() {
+        if (!lastTorrent || state.userId!==lastTorrent.owner)
+          return note('Нет последней серии для проверки');
+        captureTorrViewed(lastTorrent,'progress',true,function(err,value) {
+          if (err) return note('TorrServer: '+str(err.message).slice(0,45));
+          if (!value) return note('TorrServer вернул 0: позиция не записана');
+          note('TorrServer: '+Math.floor(value/60)+':'+('0'+Math.floor(value%60)).slice(-2));
+        });
+      });
     L.SettingsApi.addParam({component:'lampa_sync_pro',
       param:{name:'lsp_capture',type:'trigger',default:true},
       field:{name:'Сохранять просмотр торрентов',
@@ -723,6 +912,7 @@
       sanitizeSaved(saved);
       if (!state.deviceId) state.deviceId=uuid();
       loaded=true;
+      restoreLastTorrent();
       save();
       registerIdentity();
       if (!state.deviceId) {
@@ -744,6 +934,7 @@
   function onOnline(){retryAfter=0;sync(false);}
   function destroy() {
     STOPPED=true;
+    clearTorrPoll();
     if (interval) clearInterval(interval);
     if (sendTimer) clearTimeout(sendTimer);
     subscriptions.forEach(function(s) {
