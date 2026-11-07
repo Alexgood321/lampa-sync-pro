@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.7-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.8-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.7';
+  var VERSION = '0.1.8';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -24,6 +24,7 @@
   var lastSuccessfulSync = 0;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
+  var torrentResumeJob = null;
   var resumeOverrides = {}, stateListeners = [], onlineResumeTimer=null;
   // Supabase Realtime Phoenix 1.0.0; only the per-user revision head is replicated.
   var rtSocket=null, rtAccount='', rtTopic='', rtJoinRef='', rtRef=0;
@@ -235,6 +236,7 @@
   function logout() {
     realtimeStop();
     stopOnlineResume();
+    cancelTorrentResume();
     clearTorrPoll();
     lastTorrent=null;
     var oldJwt = state.auth && state.auth.access_token;
@@ -1254,24 +1256,70 @@
         poster:'',data:{lampa:true}},function(){done(null);},function(){done(new Error('torrent_unavailable'));});
     } catch(e){done(e);}
   }
+  function cancelTorrentResume() {
+    if (!torrentResumeJob) return;
+    torrentResumeJob.cancelled = true;
+    if (torrentResumeJob.timer) clearTimeout(torrentResumeJob.timer);
+    torrentResumeJob = null;
+  }
   function resumeTorrent(card,rec) {
     if (!rec || rec.source_kind!=='torrent') return note('Источник пока не поддерживается');
     var recipe=rec.source_recipe || {}, hash=str(recipe.infohash).toUpperCase();
     if (!/^([0-9A-F]{40}|[A-Z2-7]{32})$/.test(hash) ||
-      !L.Torserver || !L.Torserver.stream || !L.Torserver.parse ||
+      !L.Torserver || !L.Torserver.files || !L.Torserver.stream || !L.Torserver.parse ||
       !L.Timeline || !L.Timeline.view || !L.Player || !L.Player.play || !L.Player.playlist) {
       return note('Плеер или TorrServer не поддерживает восстановление');
     }
-    torFiles(hash,function(err,response) {
-      if (!err) return launch(response);
-      torHash(hash,recipe,function(addError) {
-        if (addError) return note('Торрент недоступен. Выберите его вручную');
-        torFiles(hash,function(retryError,r) {
-          if (retryError) return note('Не удалось загрузить файлы торрента');
-          launch(r);
-        });
+    // TorrServer /torrents may accept a magnet before its file_stats are ready.
+    // A second user click used to work because it allowed time for metadata.
+    // Keep exactly one in-flight recovery; delays are bounded and cancellable.
+    if (torrentResumeJob) {
+      if (Date.now()-torrentResumeJob.startedAt<12000) return;
+      cancelTorrentResume();
+    }
+    var job={startedAt:Date.now(),account:state.userId,cancelled:false,timer:null};
+    torrentResumeJob=job;
+    function alive(){return !STOPPED && !job.cancelled && torrentResumeJob===job &&
+      job.account===state.userId;}
+    function finishJob(){
+      if (!alive()) return false;
+      if (job.timer) {clearTimeout(job.timer);job.timer=null;}
+      torrentResumeJob=null;
+      job.cancelled=true;
+      return true;
+    }
+    function delay(ms,fn) {
+      if (!alive()) return;
+      if (job.timer) clearTimeout(job.timer);
+      job.timer=setTimeout(function(){
+        job.timer=null;
+        if (alive()) fn();
+      },ms);
+    }
+    // Two reads of an already cached torrent before attempting hash-only add.
+    function readFiles(afterAdd,attempt) {
+      if (!alive()) return;
+      torFiles(hash,function(err,response){
+        if (!alive()) return; // Ignore late callbacks after a new request/logout.
+        var items=response && (response.file_stats || response.files);
+        if (!err && Array.isArray(items) && items.length) {
+          if (finishJob()) launch(response);
+          return;
+        }
+        if (!afterAdd) {
+          if (attempt===0) return delay(550,function(){readFiles(false,1);});
+          // Adding may fail when the hash already exists. Retry reads regardless.
+          return torHash(hash,recipe,function(){
+            delay(500,function(){readFiles(true,0);});
+          });
+        }
+        var intervals=[700,1200,2200,3400];
+        if (attempt<intervals.length)
+          return delay(intervals[attempt],function(){readFiles(true,attempt+1);});
+        if (finishJob()) note('Не удалось загрузить файлы торрента. Проверьте TorrServer');
       });
-    });
+    }
+    readFiles(false,0);
     function launch(response) {
       var files=(response.file_stats || response.files || []).slice();
       var formats=/\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|mpg|mpeg|vob)$/i;
