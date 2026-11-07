@@ -26,13 +26,14 @@ function runResumeSmoke(source) {
   ];
   var button=null,sourceButton=null,sourceEntries=[],sourceMenuPosition='',
     played=null,playlist=null,random=0,db={},storage={},
+    cardOrder=['native-play','hdrezka-play'],
     openedOnline=0,selectedOnline=[],seededRoad=null,onlineMode=false;
   var anchor={length:1,last:function(){return this;},
     after:function(b){sourceButton=b;sourceEntries.push(b);sourceMenuPosition='after Torrent';}};
   var playAnchor={length:1,first:function(){return this;},after:function(b){button=b;}};
   var cardToolbar={length:1,last:function(){return this;},find:function(sel){
     return sel==='.button--play'?playAnchor:empty;},
-    prepend:function(b){button=b;}};
+    prepend:function(b){button=b;cardOrder.unshift('sync-resume');}};
   var empty={length:0,last:function(){return this;},remove:function(){},append:function(){},trigger:function(){}};
   var onlineAnchor={length:1,last:function(){return this;},trigger:function(e){if(e==='hover:enter'){openedOnline++;onlineMode=true;}return this;}};
   function onlineEpisode(num) {
@@ -54,7 +55,9 @@ function runResumeSmoke(source) {
     if(sel==='.buttons--container')return sourceMenu;
     if(sel==='.full-start-new__buttons')return cardToolbar;
     if(sel==='.view--online')return onlineAnchor;
-    if(sel==='.view--lsp-resume')return {remove:function(){button=null;}};
+    if(sel==='.view--lsp-resume')return {remove:function(){
+      button=null;cardOrder=cardOrder.filter(function(x){return x!=='sync-resume';});
+    }};
     if(sel==='.view--lsp-resume-source')return {remove:function(){sourceEntries=[];sourceButton=null;}};
     return empty;
   }};
@@ -144,6 +147,8 @@ function runResumeSmoke(source) {
   }
   showCard();
   assert(!!button,'cloud resume button appears directly on the card toolbar');
+  assert(cardOrder.join(',')==='sync-resume,native-play,hdrezka-play',
+    'Continue is first; native Play second; HDRezka third');
   assert(!!sourceButton && sourceEntries.length===1,
     'source picker contains one Continue entry');
   assert(sourceMenuPosition==='after Torrent',
@@ -197,6 +202,8 @@ function runResumeSmoke(source) {
   rec.watched_state='completed';
   showCard();
   assert(!!button && !!sourceButton,'both buttons remain after completed episode');
+  assert(cardOrder.join(',')==='sync-resume,native-play,hdrezka-play',
+    'card refresh preserves order and prevents duplicate Continue action');
   assert(sourceEntries.length===1,'card refresh never duplicates the source entry');
   button['hover:enter']();
   assert(openedTorrents.length===3 && played===null,
