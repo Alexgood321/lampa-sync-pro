@@ -1110,12 +1110,12 @@
   // Flex order survives later priority clones, and preserves other plugins.
   function enforceCardActionOrder(toolbar,action) {
     var css=
-      '.full-start-new__buttons > .view--lsp-resume,'+
-      '.full-start__buttons > .view--lsp-resume{order:-3 !important;}'+
-      '.full-start-new__buttons > .button--play,'+
-      '.full-start__buttons > .button--play{order:-2 !important;}'+
-      '.full-start-new__buttons > .button--priority,'+
-      '.full-start__buttons > .button--priority{order:-1 !important;}';
+      '.full-start-new__buttons.lsp-has-resume > .view--lsp-resume,'+
+      '.full-start__buttons.lsp-has-resume > .view--lsp-resume{order:-3 !important;}'+
+      '.full-start-new__buttons.lsp-has-resume > .button--play,'+
+      '.full-start__buttons.lsp-has-resume > .button--play{order:-2 !important;}'+
+      '.full-start-new__buttons.lsp-has-resume > .button--priority,'+
+      '.full-start__buttons.lsp-has-resume > .button--priority{order:-1 !important;}';
     var doc=win.document, el=null;
     if (doc && typeof doc.createElement==='function') {
       try {
@@ -1150,6 +1150,8 @@
     // Remove both before every update so Realtime refresh never duplicates them.
     root.find('.view--lsp-resume').remove();
     root.find('.view--lsp-resume-source').remove();
+    var bars=root.find('.full-start-new__buttons, .full-start__buttons');
+    if(bars && typeof bars.removeClass==='function')bars.removeClass('lsp-has-resume');
     var rec=findCachedResume(key);
     if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) return;
     var caption=labelResume(rec);
@@ -1180,6 +1182,7 @@
     var toolbar=root.find('.full-start-new__buttons').last();
     if (!toolbar.length) toolbar=root.find('.full-start__buttons').last();
     if (toolbar.length) {
+      if(typeof toolbar.addClass==='function')toolbar.addClass('lsp-has-resume');
       var action=createResumeButton('view--lsp-resume');
       toolbar.prepend(action);
       enforceCardActionOrder(toolbar,action);
