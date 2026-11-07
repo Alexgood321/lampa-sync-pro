@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.17-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.18-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.17';
+  var VERSION = '0.1.18';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1692,23 +1692,44 @@
         }});
       modalOpened=true;
       L.Listener.send('torrent_file',{type:'list_open',items:entries,params:params});
+      // Match native Lampa: playlist entries are shallow copies, never the
+      // same objects that receive .playlist. Otherwise every entry points
+      // back to its own array and external players fail to serialize the
+      // playback item (circular JSON structure on iOS/macOS).
+      rows.forEach(function(x) {
+        var entry={};
+        Object.keys(x.file).forEach(function(key) {
+          if(key!=='playlist')entry[key]=x.file[key];
+        });
+        playlist.push(entry);
+      });
       rows.forEach(function(x) {
         var row=x.item,el=x.file;
         el.playlist=playlist;
-        playlist.push(el);
         row.on('hover:enter',function(){
           enrichmentClosed=true;
           staged={file:el,card:card,at:Date.now()};
+          var phase='history';
           try {
             if(L.Favorite && typeof L.Favorite.add==='function' && card.id)
               L.Favorite.add('history',card,100);
+            phase='play';
             L.Player.play(el);
+            phase='callback';
             if(typeof L.Player.callback==='function')
               L.Player.callback(function(){L.Controller.toggle('modal');});
+            phase='playlist';
             L.Player.playlist(playlist);
+            phase='event';
             L.Listener.send('torrent_file',{type:'onenter',element:el,item:row,
               items:entries,params:params});
-          }catch(ignore){note('Не удалось открыть выбранную серию');}
+          }catch(error){
+            // Do not expose stream URLs or tokens through diagnostics.
+            try { if(win.console && win.console.warn)
+              win.console.warn('[Lampa Sync Pro] Episode launch failed:',error && error.name || 'error'); }
+            catch(ignore){}
+            note('Не удалось открыть выбранную серию ('+phase+')');
+          }
         });
         row.on('hover:focus',function(){
           L.Listener.send('torrent_file',{type:'onfocus',element:el,item:row,

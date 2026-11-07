@@ -390,12 +390,27 @@ function runResumeSmoke(source) {
   assert(played===null,'loading the list never autoplays an episode');
   assert(!timers.some(function(t){return t.active&&t.ms===2000;}),
     'no fixed 2000ms wait on fast path');
+  assert(fastRows.every(function(row) {
+    return Array.isArray(row.file.playlist) &&
+      row.file.playlist.length===2 &&
+      row.file.playlist.every(function(entry){return !entry.playlist;});
+  }), 'fast player items use independent playlist entries without self-reference');
+  assert(JSON.stringify(fastRows[0].file).indexOf('S02E05.mkv')>=0,
+    'saved episode player item is JSON-serializable for external players');
+  var originalFastPlay=win.Lampa.Player.play;
+  win.Lampa.Player.play=function(item) {
+    JSON.stringify(item); // External players serialize the item synchronously.
+    originalFastPlay(item);
+  };
   fastRows[1].listeners['hover:enter']();
   assert(played && played.id===5 && played.timeline.time===0,
     'following episode can still be started manually');
   fastRows[0].listeners['hover:enter']();
   assert(played && played.id===4 && played.timeline.time===1120 &&
     playlist.length===2,'saved episode resumes with full playlist');
+  assert(JSON.stringify(played).indexOf('S02E05.mkv')>=0,
+    'external player can serialize selected episode and its playlist');
+  win.Lampa.Player.play=originalFastPlay;
   assert(typeof fastRows[0].listeners['hover:long']==='function' &&
     typeof fastRows[0].listeners['hover:focus']==='function',
     'native focus and NUM-compatible long-press hooks remain');
