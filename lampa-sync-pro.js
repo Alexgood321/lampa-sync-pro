@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.18-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.19-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.18';
+  var VERSION = '0.1.19';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -247,6 +247,7 @@
     });
   }
   function logout() {
+    finishResumeLoading();
     realtimeStop();
     stopOnlineResume();
     cancelTorrentResume();
@@ -1186,6 +1187,42 @@
     }
     return null;
   }
+  // UI-only busy state; playback and Supabase state never depend on this flag.
+  var resumeLoading=null, resumeButtonViews=[];
+  function paintResumeButton(button,busy) {
+    if(!button)return;
+    try {
+      if(busy && typeof button.addClass==='function')button.addClass('lsp-resume-loading');
+      else if(!busy && typeof button.removeClass==='function')button.removeClass('lsp-resume-loading');
+      if(typeof button.attr==='function')button.attr('aria-busy',busy?'true':'false');
+    }catch(ignore){}
+  }
+  function finishResumeLoading() {
+    var job=resumeLoading;
+    if(!job)return;
+    resumeLoading=null;
+    if(job.timer)clearTimeout(job.timer);
+    (job.buttons||[]).forEach(function(button){paintResumeButton(button,false);});
+  }
+  function beginResumeLoading(key) {
+    if(resumeLoading)return false;
+    var job={key:key,account:state.userId,buttons:resumeButtonViews.slice(),timer:null};
+    resumeLoading=job;
+    job.buttons.forEach(function(button){paintResumeButton(button,true);});
+    job.timer=setTimeout(function(){
+      if(resumeLoading!==job)return;
+      finishResumeLoading();
+      cancelTorrentResume();
+      cancelTorrentFocus();
+      stopOnlineResume();
+      note('Время ожидания списка серий истекло');
+    },25000);
+    return true;
+  }
+  function failResumeLoading(message) {
+    finishResumeLoading();
+    note(message);
+  }
   // Lampa's Start.Buttons.onGroupButtons() asynchronously calls
   // onPriorityButton(), which PREPENDS a cloned source button every time
   // the screen is toggled. DOM prepend alone cannot keep Continue first.
@@ -1207,7 +1244,16 @@
       '{background-color:#fff !important;color:#117b4a !important;}'+
       '.full-start-new__buttons.lsp-has-resume > .view--lsp-resume > svg,'+
       '.full-start__buttons.lsp-has-resume > .view--lsp-resume > svg'+
-      '{width:1.5em !important;height:1.5em !important;flex-shrink:0;}';
+      '{width:1.5em !important;height:1.5em !important;flex-shrink:0;}'+
+      // Only the icon changes: the episode label and button width stay fixed.
+      '.view--lsp-resume > svg.lsp-resume-spinner,'+
+      '.view--lsp-resume-source > svg.lsp-resume-spinner{display:none !important;}'+
+      '.view--lsp-resume.lsp-resume-loading > svg.lsp-resume-glyph,'+
+      '.view--lsp-resume-source.lsp-resume-loading > svg.lsp-resume-glyph{display:none !important;}'+
+      '.view--lsp-resume.lsp-resume-loading > svg.lsp-resume-spinner,'+
+      '.view--lsp-resume-source.lsp-resume-loading > svg.lsp-resume-spinner'+
+      '{display:block !important;animation:lsp-resume-spin .85s linear infinite;}'+
+      '@keyframes lsp-resume-spin{to{transform:rotate(360deg);}}';
     var doc=win.document, el=null;
     if (doc && typeof doc.createElement==='function') {
       try {
@@ -1236,7 +1282,14 @@
     var card = e.data && e.data.movie;
     var key=mediaKey(card);
     var root=fullRoot(e);
+    if(resumeLoading && (resumeLoading.key!==key || resumeLoading.account!==state.userId)){
+      finishResumeLoading();
+      cancelTorrentResume();
+      cancelTorrentFocus();
+      stopOnlineResume();
+    }
     if (!key || !root || typeof win.$!=='function') return;
+    resumeButtonViews=[];
     // Both surfaces reuse the same cloud record, but live in distinct DOM
     // containers: the card toolbar and the native Play > Source picker.
     // Remove both before every update so Realtime refresh never duplicates them.
@@ -1245,21 +1298,32 @@
     var bars=root.find('.full-start-new__buttons, .full-start__buttons');
     if(bars && typeof bars.removeClass==='function')bars.removeClass('lsp-has-resume');
     var rec=findCachedResume(key);
-    if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) return;
+    if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) {
+      finishResumeLoading();
+      return;
+    }
     if(rec.source_kind==='torrent')prefetchTorrentResume(rec);
     var caption=labelResume(rec);
     function resumeAction() {
-      if (rec.source_kind==='torrent') resumeTorrent(card,rec);
-      else resumeOnline(card,rec,e);
+      if(!beginResumeLoading(key))return;
+      try {
+        if (rec.source_kind==='torrent') resumeTorrent(card,rec);
+        else resumeOnline(card,rec,e);
+      }catch(ignore){failResumeLoading('Не удалось открыть список серий');}
     }
     function createResumeButton(className) {
       var showEpisode=className==='view--lsp-resume';
       var button=win.$('<div class="full-start__button selector '+className+'" role="button">'+
-        '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.7" '+
+        '<svg class="lsp-resume-glyph" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.7" '+
         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
         '<path d="M6.5 11.2A11.5 11.5 0 1 1 4.5 19"/>'+
         '<path d="M5 4.5v8.5h8.5"/>'+
         '<path d="m13 11 9 5-9 5z" fill="currentColor" stroke="none"/>'+
+        '</svg>'+
+        '<svg class="lsp-resume-spinner" viewBox="0 0 32 32" fill="none" aria-hidden="true">'+
+        '<circle cx="16" cy="16" r="11" stroke="currentColor" stroke-width="3.3" opacity=".25"/>'+
+        '<path d="M16 5a11 11 0 0 1 11 11" stroke="currentColor" stroke-width="3.3" '+
+        'stroke-linecap="round"/>'+
         '</svg>'+(showEpisode ?
         '<strong class="lsp-resume-episode" '+
         'style="font-size:.8em;font-weight:600;white-space:nowrap;margin-left:.4em"></strong>' : '')+
@@ -1267,6 +1331,11 @@
       if(showEpisode)button.find('.lsp-resume-episode').text(resumeEpisodeShort(rec));
       button.find('span').text(caption);
       button.attr('title',caption).attr('aria-label',caption);
+      resumeButtonViews.push(button);
+      if(resumeLoading && resumeLoading.key===key && resumeLoading.account===state.userId){
+        resumeLoading.buttons.push(button);
+        paintResumeButton(button,true);
+      }
       button.on('hover:enter',resumeAction);
       return button;
     }
@@ -1336,21 +1405,21 @@
   }
   function resumeOnline(card,rec,fullEvent) {
     if(!rec || rec.source_kind!=='lampac' || !onlinePrefs(card,rec.source_recipe))
-      return note('Онлайн-источник недоступен для восстановления');
+      return failResumeLoading('Онлайн-источник недоступен для восстановления');
     var root=fullRoot(fullEvent);
-    if(!root)return note('Не удалось открыть онлайн-раздел');
+    if(!root)return failResumeLoading('Не удалось открыть онлайн-раздел');
     var action=root.find('.view--online').last();
     if(!action || !action.length || typeof action.trigger!=='function')
-      return note('Онлайн-раздел недоступен');
+      return failResumeLoading('Онлайн-раздел недоступен');
     stopOnlineResume();
     var match=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
-    if(!match) {action.trigger('hover:enter');return;}
+    if(!match) {action.trigger('hover:enter');finishResumeLoading();return;}
     var desired=Number(match[2]),season=Number(match[1]),completed=rec.watched_state==='completed';
     var launched=false,startedAt=Date.now();
     function scan() {
       if(STOPPED || launched || Date.now()-startedAt>18000){
         stopOnlineResume();
-        if(!launched && !STOPPED)note('Не удалось найти серию. Выберите её вручную');
+        if(!launched && !STOPPED)failResumeLoading('Не удалось найти серию. Выберите её вручную');
         return;
       }
       if(!L.Activity || typeof L.Activity.active!=='function' || typeof win.$!=='function')return;
@@ -1386,13 +1455,14 @@
           percent:duration>0?Math.min(100,seconds/duration*100):0});}catch(ignore){}
       }
       launched=true;stopOnlineResume();
-      try{selected.trigger('hover:enter');}catch(ignore){note('Не удалось открыть серию');}
+      try{selected.trigger('hover:enter');finishResumeLoading();}
+      catch(ignore){failResumeLoading('Не удалось открыть серию');}
     }
     // This short-lived scan watches the provider UI after a user click.
     // It is not a network poll or a cloud synchronization interval.
     onlineResumeTimer=setInterval(scan,180);
     try{action.trigger('hover:enter');scan();}
-    catch(ignore){stopOnlineResume();note('Онлайн-раздел не открылся');}
+    catch(ignore){stopOnlineResume();failResumeLoading('Онлайн-раздел не открылся');}
   }
   function normalPath(v) { return str(v).replace(/\\/g,'/').replace(/^\/+/,'').toLowerCase(); }
   function torFiles(hash,cb) {
@@ -1429,6 +1499,8 @@
     if(job.deadline)clearTimeout(job.deadline);
     if(L.Listener && typeof L.Listener.remove==='function')
       L.Listener.remove('torrent_file',job.handler);
+    if(L.Modal && L.Modal.listener && typeof L.Modal.listener.remove==='function' && job.modalHandler)
+      L.Modal.listener.remove('update',job.modalHandler);
   }
   function openNativeTorrentFiles(card,rec,hash) {
     if(!L.Torrent || typeof L.Torrent.open!=='function' ||
@@ -1462,11 +1534,13 @@
         L.Controller.collectionFocus(job.item,viewport);
         if(sc && typeof sc.update==='function')sc.update(job.item,true);
       }catch(ignore){}
+      finishResumeLoading();
       cancelTorrentFocus();
     }
     job.handler=function(e) {
       if(!valid()||!e)return;
       if(e.type==='list_close' || e.type==='onenter') {
+        finishResumeLoading();
         cancelTorrentFocus();return;
       }
       if(e.type!=='render' || !e.element || !e.item)return;
@@ -1506,6 +1580,14 @@
       job.timer=setTimeout(focus,80);
     };
     L.Listener.follow('torrent_file',job.handler);
+    if(L.Modal && L.Modal.listener && typeof L.Modal.listener.follow==='function'){
+      job.modalHandler=function(event){
+        if(!valid()||!event||!event.new_html)return;
+        if(typeof event.new_html.hasClass==='function' &&
+          event.new_html.hasClass('torrent-files'))finishResumeLoading();
+      };
+      L.Modal.listener.follow('update',job.modalHandler);
+    }
     job.deadline=setTimeout(cancelTorrentFocus,45000);
     try{
       L.Torrent.open(hash,card);
@@ -1686,6 +1768,7 @@
       var empty=win.$('<div class="torrent-files"></div>');
       L.Modal.open({title:'Файлы торрента',html:empty,size:'large',mask:true,
         onBack:function(){
+          finishResumeLoading();
           enrichmentClosed=true;
           L.Modal.close();
           L.Listener.send('torrent_file',{type:'list_close'});
@@ -1769,6 +1852,7 @@
           items:entries,params:params});
       });
       L.Modal.update(contents);
+      finishResumeLoading();
       // Stock Lampa calls Api.seasons() before building the list, which blocks
       // its first paint on network/cache. We render immediately and hydrate
       // episode stills, proper titles and air dates after the API responds.
@@ -1876,12 +1960,12 @@
       L.Modal && L.Controller && typeof L.Controller.collectionFocus==='function');
   }
   function resumeTorrent(card,rec) {
-    if (!rec || rec.source_kind!=='torrent') return note('Источник пока не поддерживается');
+    if (!rec || rec.source_kind!=='torrent') return failResumeLoading('Источник пока не поддерживается');
     var recipe=rec.source_recipe || {}, hash=str(recipe.infohash).toUpperCase();
     if (!/^([0-9A-F]{40}|[A-Z2-7]{32})$/.test(hash) ||
       !L.Torserver || !L.Torserver.files || !L.Torserver.stream || !L.Torserver.parse ||
       !L.Timeline || !L.Timeline.view || !L.Player || !L.Player.play || !L.Player.playlist) {
-      return note('Плеер или TorrServer не поддерживает восстановление');
+      return failResumeLoading('Плеер или TorrServer не поддерживает восстановление');
     }
     // TorrServer /torrents may accept a magnet before its file_stats are ready.
     // A second user click used to work because it allowed time for metadata.
@@ -1929,7 +2013,7 @@
         var intervals=[700,1200,2200,3400];
         if (attempt<intervals.length)
           return delay(intervals[attempt],function(){readFiles(true,attempt+1);});
-        if (finishJob()) note('Не удалось загрузить файлы торрента. Проверьте TorrServer');
+        if (finishJob()) failResumeLoading('Не удалось загрузить файлы торрента. Проверьте TorrServer');
       });
     }
     readFiles(false,0);
@@ -1937,7 +2021,7 @@
       var files=(response.file_stats || response.files || []).slice();
       var formats=/\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|mpg|mpeg|vob)$/i;
       files=files.filter(function(file){return formats.test(str(file.path));});
-      if(!files.length)return note('В раздаче нет видеофайлов');
+      if(!files.length)return failResumeLoading('В раздаче нет видеофайлов');
       // Native Lampa renders exactly the same file cards as the Torrent
       // section; a saved episode is focused when torrent_file:render arrives.
       // The one-file case uses Select because native Lampa autoplays it after
@@ -1950,7 +2034,7 @@
         openNativeTorrentFiles(card,rec,hash))return;
 
       if(!L.Select || typeof L.Select.show!=='function')
-        return note('Список файлов недоступен в этой версии Lampa');
+        return failResumeLoading('Список файлов недоступен в этой версии Lampa');
       files.sort(function(a,b){return normalPath(a.path).localeCompare(normalPath(b.path));});
       var playlist=[],selected=null;
       files.forEach(function(file){
@@ -1973,7 +2057,7 @@
             selected=item;
         }catch(ignore){}
       });
-      if(!playlist.length)return note('Не удалось разобрать список файлов');
+      if(!playlist.length)return failResumeLoading('Не удалось разобрать список файлов');
       if(!selected) {
         var match=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
         for(var i=0;match && i<playlist.length;i++){
@@ -2012,6 +2096,7 @@
         };
       });
       L.Select.show({title:'Файлы торрента',items:options});
+      finishResumeLoading();
     }
   }
   function status() {
@@ -2143,6 +2228,7 @@
     sync(false);
   }
   function destroy() {
+    finishResumeLoading();
     STOPPED=true;
     realtimeStop();
     stopOnlineResume();
