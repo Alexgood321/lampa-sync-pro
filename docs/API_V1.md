@@ -6,6 +6,7 @@
 - `20261106232634_lsp_sync_v1_hardening.sql`
 - `20261106233416_lsp_sync_v1_reset_resume_consistency.sql`
 - `20261107004025_lsp_sync_v1_preserve_position_on_start.sql`
+- `20261107011103_lsp_sync_v1_realtime_revision_head.sql`
 
 ## Статус
 
@@ -109,4 +110,4 @@ Authorization: Bearer <SUPABASE_USER_ACCESS_TOKEN>
 
 На 7 ноября 2026 г.: **24/24 SQL-проверки выполнены**, Supabase Security Advisor: предупреждение **Leaked Password Protection Disabled** (настройки Auth), Performance Advisor: **0 замечаний** при предыдущей проверке; в БД уже имеются реальные события двух тестовых устройств. Миграция `preserve_position_on_start` гарантирует, что `started` с позицией `0` не стирает существующий подтверждённый checkpoint.
 
-Для E2E требуется подтвердить настоящий HTTP-запрос с валидным JWT и CORS на устройствах. Пока проверены лишь SQL-транзакции и клиентские моки. [Альфа-клиент](PLUGIN_ALPHA.md).
+Вход и отображение продолжения iPhone → Mac уже подтверждены. Отдельно требуется E2E-доказательство доставки события Supabase Realtime через WebSocket на iOS/Mac/Android TV. Синтетические тесты SQL и WebSocket не заменяют проверки на реальных устройствах. [Альфа-клиент](PLUGIN_ALPHA.md).
