@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.8-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.9-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.8';
+  var VERSION = '0.1.9';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1104,32 +1104,49 @@
     var key=mediaKey(card);
     var root=fullRoot(e);
     if (!key || !root || typeof win.$!=='function') return;
+    // Both surfaces reuse the same cloud record, but live in distinct DOM
+    // containers: the card toolbar and the native Play > Source picker.
+    // Remove both before every update so Realtime refresh never duplicates them.
     root.find('.view--lsp-resume').remove();
+    root.find('.view--lsp-resume-source').remove();
     var rec=findCachedResume(key);
     if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) return;
-    // Lampa "Play" opens a source picker. Its hidden .buttons--container
-    // must never receive our resume action: only the visible card toolbar.
-    var toolbar=root.find('.full-start-new__buttons').last();
-    if (!toolbar.length) toolbar=root.find('.full-start__buttons').last();
-    if (!toolbar.length) return;
     var caption=labelResume(rec);
-    var button=win.$('<div class="full-start__button selector view--lsp-resume" role="button">'+
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '+
-      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
-      '<path d="M4.6 9A8 8 0 1 1 4 12"/>'+
-      '<path d="M4 4v5h5"/>'+
-      '<path d="m10 8.5 5.5 3.5L10 15.5z" fill="currentColor" stroke="none"/>'+
-      '</svg><span></span></div>');
-    button.find('span').text(caption);
-    button.attr('title',caption).attr('aria-label',caption);
-    button.on('hover:enter',function() {
+    function resumeAction() {
       if (rec.source_kind==='torrent') resumeTorrent(card,rec);
       else resumeOnline(card,rec,e);
-    });
-    // The second action stays visible even when the mobile toolbar scrolls.
-    var play=toolbar.find('.button--play').first();
-    if (play.length) play.after(button);
-    else toolbar.prepend(button);
+    }
+    function createResumeButton(className) {
+      var button=win.$('<div class="full-start__button selector '+className+'" role="button">'+
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '+
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
+        '<path d="M4.6 9A8 8 0 1 1 4 12"/>'+
+        '<path d="M4 4v5h5"/>'+
+        '<path d="m10 8.5 5.5 3.5L10 15.5z" fill="currentColor" stroke="none"/>'+
+        '</svg><span></span></div>');
+      button.find('span').text(caption);
+      button.attr('title',caption).attr('aria-label',caption);
+      button.on('hover:enter',resumeAction);
+      return button;
+    }
+    // Primary action directly beside the green Play button on the card.
+    var toolbar=root.find('.full-start-new__buttons').last();
+    if (!toolbar.length) toolbar=root.find('.full-start__buttons').last();
+    if (toolbar.length) {
+      var action=createResumeButton('view--lsp-resume');
+      var play=toolbar.find('.button--play').first();
+      if (play.length) play.after(action);
+      else toolbar.prepend(action);
+    }
+    // Second entry in Lampa's native source picker. The picker enumerates
+    // direct children of hidden .buttons--container; this must be inserted
+    // immediately after the Torrent source, not inside the visible toolbar.
+    var torrent=root.find('.buttons--container > .view--torrent').last();
+    if (torrent.length) torrent.after(createResumeButton('view--lsp-resume-source'));
+    else {
+      var sources=root.find('.buttons--container').last();
+      if (sources.length) sources.prepend(createResumeButton('view--lsp-resume-source'));
+    }
   }
   function visibleCard(e) {
     if (!e || e.type!=='complite') return;
