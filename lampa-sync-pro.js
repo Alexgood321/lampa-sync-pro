@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.12-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.13-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.12';
+  var VERSION = '0.1.13';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1115,7 +1115,17 @@
       '.full-start-new__buttons.lsp-has-resume > .button--play,'+
       '.full-start__buttons.lsp-has-resume > .button--play{order:-2 !important;}'+
       '.full-start-new__buttons.lsp-has-resume > .button--priority,'+
-      '.full-start__buttons.lsp-has-resume > .button--priority{order:-1 !important;}';
+      '.full-start__buttons.lsp-has-resume > .button--priority{order:-1 !important;}'+
+      // Green primary action, but keep Lampa's white focus state legible.
+      '.full-start-new__buttons.lsp-has-resume > .view--lsp-resume:not(.focus),'+
+      '.full-start__buttons.lsp-has-resume > .view--lsp-resume:not(.focus)'+
+      '{background-color:#168c58 !important;color:#fff !important;}'+
+      '.full-start-new__buttons.lsp-has-resume > .view--lsp-resume.focus,'+
+      '.full-start__buttons.lsp-has-resume > .view--lsp-resume.focus'+
+      '{background-color:#fff !important;color:#117b4a !important;}'+
+      '.full-start-new__buttons.lsp-has-resume > .view--lsp-resume > svg,'+
+      '.full-start__buttons.lsp-has-resume > .view--lsp-resume > svg'+
+      '{width:1.5em !important;height:1.5em !important;flex-shrink:0;}';
     var doc=win.document, el=null;
     if (doc && typeof doc.createElement==='function') {
       try {
@@ -1162,11 +1172,11 @@
     function createResumeButton(className) {
       var showEpisode=className==='view--lsp-resume';
       var button=win.$('<div class="full-start__button selector '+className+'" role="button">'+
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '+
+        '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.7" '+
         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
-        '<path d="M4.6 9A8 8 0 1 1 4 12"/>'+
-        '<path d="M4 4v5h5"/>'+
-        '<path d="m10 8.5 5.5 3.5L10 15.5z" fill="currentColor" stroke="none"/>'+
+        '<path d="M6.5 11.2A11.5 11.5 0 1 1 4.5 19"/>'+
+        '<path d="M5 4.5v8.5h8.5"/>'+
+        '<path d="m13 11 9 5-9 5z" fill="currentColor" stroke="none"/>'+
         '</svg>'+(showEpisode ?
         '<strong class="lsp-resume-episode" '+
         'style="font-size:.8em;font-weight:600;white-space:nowrap;margin-left:.4em"></strong>' : '')+
