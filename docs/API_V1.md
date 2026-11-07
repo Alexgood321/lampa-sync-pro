@@ -7,10 +7,11 @@
 - `20261106233416_lsp_sync_v1_reset_resume_consistency.sql`
 - `20261107004025_lsp_sync_v1_preserve_position_on_start.sql`
 - `20261107011103_lsp_sync_v1_realtime_revision_head.sql`
+- `20261107013230_lsp_v1_lampac_online_source.sql`
 
 ## Статус
 
-**База и RPC работают в тестах SQL.** Альфа-клиент выполняет Auth и REST-запросы, однако подписанный JWT и HTTP E2E с TV/iOS пока не проверялись. Действующие Lampa/HDRezka/NUM не изменялись.
+**База и RPC работают в тестах SQL; предыдущая версия Realtime проверена пользователем на устройствах.** Новая схема онлайн-продолжения Lampac и NUM 2.0.7 пока проверены тестами, реальные E2E требуются.
 
 ## Подключение
 
@@ -84,8 +85,9 @@ Authorization: Bearer <SUPABASE_USER_ACCESS_TOKEN>
 
 - `torrent`: `infohash` (40 HEX или 32 Base32), `file_index` (0..100000), `file_path` (1..600 символов), опционально `torrent_title`. Секреты трекеров, magnet-URL, HTTP-потоки запрещены.
 - `hdrezka`: `film_id`, `season_id`, `episode_id`, `translator_id` (числовые идентификаторы в строках); необязательное `voice_label`. **Синхронизация HDRezka ещё не активирована.**
+- `lampac`: `balanser` (1–64 разрешённых символов), `voice_id`, `voice_name`, `season_index`, `voice_index`. Только метаданные провайдера, озвучки и сезона, не видео URL. Поддержка реализована в Lampa Sync Pro 0.1.6.
 
-Обе записи хранятся раздельно, даже если относятся к одной серии. Страница HDRezka без подтверждённого TMDb ID не объединяется с похожими названиями.
+Все записи различных источников хранятся раздельно, даже если относятся к одной серии. Страница HDRezka без подтверждённого TMDb ID не объединяется с похожими названиями.
 
 ### Ограничения v1
 
@@ -108,6 +110,6 @@ Authorization: Bearer <SUPABASE_USER_ACCESS_TOKEN>
 
 Автоматизированный SQL smoke: [`tests/supabase_smoke.sql`](../tests/supabase_smoke.sql). Запускается администратором БД внутри одной транзакции, **все тестовые записи откатываются**. Тесты имитируют `authenticated` и JWT subject через `SET LOCAL ROLE` и `set_config`; это **не эквивалент подписанной HTTP Auth-сессии**.
 
-На 7 ноября 2026 г.: **24/24 SQL-проверки выполнены**, Supabase Security Advisor: предупреждение **Leaked Password Protection Disabled** (настройки Auth), Performance Advisor: **0 замечаний** при предыдущей проверке; в БД уже имеются реальные события двух тестовых устройств. Миграция `preserve_position_on_start` гарантирует, что `started` с позицией `0` не стирает существующий подтверждённый checkpoint.
+На 7 ноября 2026 г.: **30/30 SQL-проверок выполнены**, Supabase Security Advisor: предупреждение **Leaked Password Protection Disabled** (настройки Auth), Performance Advisor: **0 замечаний** при предыдущей проверке; в БД уже имеются реальные события двух тестовых устройств. Миграция `preserve_position_on_start` гарантирует, что `started` с позицией `0` не стирает существующий подтверждённый checkpoint.
 
 Вход и отображение продолжения iPhone → Mac уже подтверждены. Отдельно требуется E2E-доказательство доставки события Supabase Realtime через WebSocket на iOS/Mac/Android TV. Синтетические тесты SQL и WebSocket не заменяют проверки на реальных устройствах. [Альфа-клиент](PLUGIN_ALPHA.md).
