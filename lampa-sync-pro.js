@@ -1282,8 +1282,12 @@
     var card = e.data && e.data.movie;
     var key=mediaKey(card);
     var root=fullRoot(e);
-    if(resumeLoading && (resumeLoading.key!==key || resumeLoading.account!==state.userId))
+    if(resumeLoading && (resumeLoading.key!==key || resumeLoading.account!==state.userId)){
       finishResumeLoading();
+      cancelTorrentResume();
+      cancelTorrentFocus();
+      stopOnlineResume();
+    }
     if (!key || !root || typeof win.$!=='function') return;
     resumeButtonViews=[];
     // Both surfaces reuse the same cloud record, but live in distinct DOM
@@ -1536,6 +1540,7 @@
     job.handler=function(e) {
       if(!valid()||!e)return;
       if(e.type==='list_close' || e.type==='onenter') {
+        finishResumeLoading();
         cancelTorrentFocus();return;
       }
       if(e.type!=='render' || !e.element || !e.item)return;
