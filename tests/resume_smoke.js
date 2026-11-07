@@ -22,15 +22,31 @@ function runResumeSmoke(source) {
     {id:4,path:'S02E05.mkv',path_human:'S02E05.mkv'},
     {id:5,path:'S02E06.mkv',path_human:'S02E06.mkv'}
   ];
-  var button=null,played=null,playlist=null,random=0,db={};
+  var button=null,played=null,playlist=null,random=0,db={},storage={},
+    openedOnline=0,selectedOnline=[],seededRoad=null,onlineMode=false;
   var anchor={length:1,last:function(){return this;},after:function(b){button=b;}};
-  var empty={length:0,last:function(){return this;},remove:function(){},append:function(){}};
+  var empty={length:0,last:function(){return this;},remove:function(){},append:function(){},trigger:function(){}};
+  var onlineAnchor={length:1,last:function(){return this;},trigger:function(e){if(e==='hover:enter'){openedOnline++;onlineMode=true;}return this;}};
+  function onlineEpisode(num) {
+    return {nodeMock:true,number:num,find:function(selector){
+      if(selector==='.online-prestige__episode-number')
+        return {text:function(){return String(num);}};
+      if(selector==='.time-line')
+        return {attr:function(){return 'online-hash-'+num;}};
+      return empty;
+    },trigger:function(type){if(type==='hover:enter')selectedOnline.push(num);return this;}};
+  }
+  var episodeNodes=[onlineEpisode(5),onlineEpisode(6)];
+  var episodeList={length:2,each:function(fn){episodeNodes.forEach(function(n,i){fn(i,n);});}};
+  var onlinePanel={find:function(selector){return selector==='.online-prestige--full'?episodeList:empty;}};
   var root={find:function(sel){
     if(sel==='.view--torrent')return anchor;
+    if(sel==='.view--online')return onlineAnchor;
     if(sel==='.view--lsp-resume')return empty;
     return empty;
   }};
   function dom(html){
+    if(html && html.nodeMock)return html;
     if(String(html).indexOf('view--lsp-resume')!==-1){
       var obj={text:function(t){this.value=t;return this;},
         on:function(k,cb){this[k]=cb;return this;}};
@@ -49,8 +65,11 @@ function runResumeSmoke(source) {
       Player:{listener:player,play:function(x){played=x;},playlist:function(x){playlist=x;}},
       PlayerVideo:{listener:video},
       Timeline:{listener:tl,view:function(hash){return {hash:hash,time:0,duration:2700,
-        percent:0,handler:function(){}};}},
-      Storage:{get:function(k,def){return def;},set:function(){}},
+        percent:0,handler:function(){}};},
+        update:function(road){seededRoad=road;}},
+      Storage:{get:function(k,def){return Object.prototype.hasOwnProperty.call(storage,k)?storage[k]:def;},
+        set:function(k,v){storage[k]=v;}},
+      Activity:{active:function(){return onlineMode?{component:'lampac',activity:{render:function(){return onlinePanel;}}}:null;}},
       Noty:{show:function(){}},
       SettingsApi:{addComponent:function(){},addParam:function(x){settings[x.param.name]=x;}},
       Input:{edit:function(o,cb){cb(queue.shift());}},
@@ -106,6 +125,33 @@ function runResumeSmoke(source) {
   button['hover:enter']();
   assert(played.id===5,'completed episode advances to next file');
   assert(played.timeline.time===0,'next episode starts from zero');
+  // Native Lampac online resume remains part of our own Sync Pro button.
+  rec={episode_key:'s2:e5',source_key:'lampac:kodik:88',source_kind:'lampac',
+    source_recipe:{balanser:'kodik',voice_id:'88',voice_name:'Studio',
+      season_index:1,voice_index:2},
+    position_seconds:1120,duration_seconds:2400,watched_state:'in_progress',revision:2};
+  showCard();
+  assert(!!button && button.value.indexOf('С2E5')>=0,
+    'the same card button supports Lampac online episodes');
+  button['hover:enter']();
+  assert(openedOnline===1,'native online action opens');
+  assert(selectedOnline[0]===5,'matching online episode auto-selected');
+  assert(!!seededRoad && seededRoad.hash==='online-hash-5' && seededRoad.time===1120,
+    'online resume timeline seeded for the actual selected hash');
+  assert(storage.active_balanser==='kodik' && storage.online_balanser==='kodik',
+    'native provider preference restored');
+  assert(storage.online_choice_kodik[7000].voice_id==='88' &&
+    storage.online_choice_kodik[7000].season===1,
+    'voice and season choice restored');
+  assert(!Object.keys(storage).some(function(key){return key.indexOf('stream_url')>=0;}),
+    'no stream URL is stored');
+  rec.watched_state='completed';
+  onlineMode=false;
+  showCard();
+  button['hover:enter']();
+  assert(selectedOnline[1]===6,'completed online episode advances to the next available episode');
+  assert(seededRoad.hash==='online-hash-5','completed next episode does not inherit old timecode');
+  rec.watched_state='in_progress';
   win.LampaSyncPro.destroy();
   return {passed:passed};
 }
