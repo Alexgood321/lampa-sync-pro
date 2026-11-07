@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.9-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.10-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.9';
+  var VERSION = '0.1.10';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -24,7 +24,7 @@
   var lastSuccessfulSync = 0;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
-  var torrentResumeJob = null;
+  var torrentResumeJob = null, torrentFocusJob = null;
   var resumeOverrides = {}, stateListeners = [], onlineResumeTimer=null;
   // Supabase Realtime Phoenix 1.0.0; only the per-user revision head is replicated.
   var rtSocket=null, rtAccount='', rtTopic='', rtJoinRef='', rtRef=0;
@@ -237,6 +237,7 @@
     realtimeStop();
     stopOnlineResume();
     cancelTorrentResume();
+    cancelTorrentFocus();
     clearTorrPoll();
     lastTorrent=null;
     var oldJwt = state.auth && state.auth.access_token;
@@ -1082,6 +1083,11 @@
     }
     return null;
   }
+  function resumeEpisodeShort(rec) {
+    var m=str(rec && rec.episode_key).match(/^s(\d{1,3}):e(\d{1,4})$/);
+    if(!m)return 'Фильм';
+    return 'S'+('0'+Number(m[1])).slice(-2)+'E'+('0'+Number(m[2])).slice(-2);
+  }
   function labelResume(rec) {
     var ep = rec.episode_key === 'movie' ? 'фильм' : str(rec.episode_key).replace(/^s(\d+):e(\d+)$/,'С$1E$2');
     var sec = Math.floor(number(rec.position_seconds));
@@ -1123,7 +1129,10 @@
         '<path d="M4.6 9A8 8 0 1 1 4 12"/>'+
         '<path d="M4 4v5h5"/>'+
         '<path d="m10 8.5 5.5 3.5L10 15.5z" fill="currentColor" stroke="none"/>'+
-        '</svg><span></span></div>');
+        '</svg><strong class="lsp-resume-episode" '+
+        'style="font-size:.8em;font-weight:600;white-space:nowrap;margin-left:.4em"></strong>'+
+        '<span></span></div>');
+      button.find('.lsp-resume-episode').text(resumeEpisodeShort(rec));
       button.find('span').text(caption);
       button.attr('title',caption).attr('aria-label',caption);
       button.on('hover:enter',resumeAction);
@@ -1279,6 +1288,92 @@
     if (torrentResumeJob.timer) clearTimeout(torrentResumeJob.timer);
     torrentResumeJob = null;
   }
+  function cancelTorrentFocus() {
+    var job=torrentFocusJob;
+    if(!job)return;
+    torrentFocusJob=null;
+    if(job.timer)clearTimeout(job.timer);
+    if(job.deadline)clearTimeout(job.deadline);
+    if(L.Listener && typeof L.Listener.remove==='function')
+      L.Listener.remove('torrent_file',job.handler);
+  }
+  function openNativeTorrentFiles(card,rec,hash) {
+    if(!L.Torrent || typeof L.Torrent.open!=='function' ||
+      !L.Listener || typeof L.Listener.follow!=='function')return false;
+    cancelTorrentFocus();
+    var recipe=rec.source_recipe || {},key=mediaKey(card);
+    var job={account:state.userId,timer:null,deadline:null,handler:null,item:null,
+      attempts:0};
+    torrentFocusJob=job;
+    function valid() {
+      return !STOPPED && torrentFocusJob===job && state.userId===job.account;
+    }
+    function focus() {
+      if(!valid() || !job.item)return;
+      var sc=L.Modal && L.Modal.scroll && L.Modal.scroll();
+      var viewport=sc && sc.render && sc.render();
+      var node=job.item[0];
+      var el=viewport && viewport[0];
+      var controller=L.Controller && L.Controller.enabled &&
+        L.Controller.enabled();
+      // The native torrent list emits "render" before Modal.update. Retry
+      // just the UI focus, not file downloads, until the row is attached.
+      if(!node || !el || (typeof el.contains==='function' && !el.contains(node)) ||
+        (controller && controller.name!=='modal')) {
+        if(job.attempts++<8)
+          job.timer=setTimeout(focus,90);
+        else cancelTorrentFocus();
+        return;
+      }
+      try {
+        L.Controller.collectionFocus(job.item,viewport);
+        if(sc && typeof sc.update==='function')sc.update(job.item,true);
+      }catch(ignore){}
+      cancelTorrentFocus();
+    }
+    job.handler=function(e) {
+      if(!valid()||!e)return;
+      if(e.type==='list_close' || e.type==='onenter') {
+        cancelTorrentFocus();return;
+      }
+      if(e.type!=='render' || !e.element || !e.item)return;
+      var element=e.element;
+      if(str(element.torrent_hash).toUpperCase()!==hash)return;
+      if(e.params && e.params.movie && key &&
+        mediaKey(e.params.movie) && mediaKey(e.params.movie)!==key)return;
+      var samePath=normalPath(element.path)===normalPath(recipe.file_path);
+      var sameIndex=Number(element.id)===Number(recipe.file_index);
+      var match=(samePath && sameIndex) || samePath;
+      if(!match) {
+        var matchEpisode=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
+        match=!!matchEpisode &&
+          Number(element.season)===Number(matchEpisode[1]) &&
+          Number(element.episode)===Number(matchEpisode[2]);
+      }
+      if(!match || job.item)return;
+      job.item=e.item;
+      job.timer=setTimeout(focus,80);
+    };
+    L.Listener.follow('torrent_file',job.handler);
+    job.deadline=setTimeout(cancelTorrentFocus,45000);
+    try{
+      L.Torrent.open(hash,card);
+      return true;
+    }catch(ignore){cancelTorrentFocus();return false;}
+  }
+  function nativeTorrentSelectorAllowed() {
+    // Native Torrent.open() on Android with external torrent-client mode
+    // calls Android.playHash(), bypassing the file picker entirely.
+    if(L.Platform && typeof L.Platform.is==='function' &&
+      L.Platform.is('android')) {
+      try{
+        if(!L.Storage || !L.Storage.field ||
+          !L.Storage.field('internal_torrclient'))return false;
+      }catch(ignore){return false;}
+    }
+    return !!(L.Torrent && typeof L.Torrent.open==='function' &&
+      L.Modal && L.Controller && typeof L.Controller.collectionFocus==='function');
+  }
   function resumeTorrent(card,rec) {
     if (!rec || rec.source_kind!=='torrent') return note('Источник пока не поддерживается');
     var recipe=rec.source_recipe || {}, hash=str(recipe.infohash).toUpperCase();
@@ -1340,57 +1435,76 @@
     function launch(response) {
       var files=(response.file_stats || response.files || []).slice();
       var formats=/\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|mpg|mpeg|vob)$/i;
-      files=files.filter(function(f){return formats.test(str(f.path));});
-      if (!files.length) return note('В раздаче нет видеофайлов');
+      files=files.filter(function(file){return formats.test(str(file.path));});
+      if(!files.length)return note('В раздаче нет видеофайлов');
+      // Native Lampa renders exactly the same file cards as the Torrent
+      // section; a saved episode is focused when torrent_file:render arrives.
+      // The one-file case uses Select because native Lampa autoplays it after
+      // ten seconds, contrary to the user's explicit episode-picker intent.
+      if(files.length>1 && nativeTorrentSelectorAllowed() &&
+        openNativeTorrentFiles(card,rec,hash))return;
+
+      if(!L.Select || typeof L.Select.show!=='function')
+        return note('Список файлов недоступен в этой версии Lampa');
       files.sort(function(a,b){return normalPath(a.path).localeCompare(normalPath(b.path));});
-      var playlist=[],target=null;
-      files.forEach(function(file) {
-        try {
-          var parsed=L.Torserver.parse({movie:card,files:files,filename:file.path_human||file.path,path:file.path});
-          if (!parsed || !parsed.hash) return;
-          var road=L.Timeline.view(parsed.hash, {card:card,season:parsed.season,episode:parsed.episode}) || {};
-          if (typeof road.handler!=='function') return;
+      var playlist=[],selected=null;
+      files.forEach(function(file){
+        try{
+          var parsed=L.Torserver.parse({movie:card,files:files,
+            filename:file.path_human||file.path,path:file.path});
+          if(!parsed || !parsed.hash)return;
+          var road=L.Timeline.view(parsed.hash,{card:card,
+            season:parsed.season,episode:parsed.episode})||{};
+          if(typeof road.handler!=='function')return;
           var item={card:card,id:file.id,path:file.path,torrent_hash:hash,
             season:parsed.season,episode:parsed.episode,
-            url:L.Torserver.stream(file.path,hash,file.id),timeline:{
-              hash:parsed.hash,handler:road.handler,time:number(road.time),
-              duration:number(road.duration),percent:number(road.percent)
-            }};
+            url:L.Torserver.stream(file.path,hash,file.id),
+            timeline:{hash:parsed.hash,handler:road.handler,
+              time:number(road.time),duration:number(road.duration),
+              percent:number(road.percent)}};
           playlist.push(item);
-          if (Number(file.id)===Number(recipe.file_index) &&
-             normalPath(file.path)===normalPath(recipe.file_path)) target=item;
-        } catch (ignore) {}
+          var pathMatches=normalPath(file.path)===normalPath(recipe.file_path);
+          if(pathMatches && (Number(file.id)===Number(recipe.file_index)||!selected))
+            selected=item;
+        }catch(ignore){}
       });
-      if (!target) {
-        for(var i=0;i<playlist.length;i++) {
-          if (normalPath(playlist[i].path)===normalPath(recipe.file_path)) { target=playlist[i];break; }
-        }
-      }
-      if (!target) return note('Сохранённый файл не найден. Выберите серию вручную');
-      var sec=number(rec.position_seconds),dur=number(rec.duration_seconds);
-      if (rec.watched_state==='completed' || (dur>0 && sec>=dur*0.9)) {
-        var next=null;
-        for(var j=0;j<playlist.length;j++) {
-          if (number(playlist[j].season)>number(target.season) ||
-             (number(playlist[j].season)===number(target.season) && number(playlist[j].episode)>number(target.episode))) {
-            next=playlist[j];break;
+      if(!playlist.length)return note('Не удалось разобрать список файлов');
+      if(!selected) {
+        var match=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
+        for(var i=0;match && i<playlist.length;i++){
+          if(number(playlist[i].season)===Number(match[1]) &&
+            number(playlist[i].episode)===Number(match[2])) {
+            selected=playlist[i];break;
           }
         }
-        if (next) {target=next;sec=0;dur=0;}
       }
-      target.timeline.time=Math.max(0,Math.round(sec));
-      target.timeline.duration=Math.max(0,Math.round(dur)) || target.timeline.duration;
-      target.timeline.percent=target.timeline.duration ?
-        Math.min(100,100*target.timeline.time/target.timeline.duration) : 0;
-      staged={file:target,card:card,at:Date.now()};
-      try {
-        var options={};
-        Object.keys(target).forEach(function(k){options[k]=target[k];});
-        options.playlist=playlist;
-        options.return_result=true;
-        L.Player.play(options);
-        L.Player.playlist(playlist);
-      } catch(e) { note('Не удалось открыть плеер'); }
+      var options=playlist.map(function(file){
+        var label=number(file.episode)>0 ?
+          'С'+number(file.season)+' · Е'+number(file.episode) : str(file.path).split('/').pop();
+        return {
+          title:label,
+          subtitle:str(file.path).split('/').pop(),
+          selected:file===selected,
+          onSelect:function(){
+            var sec=0,dur=0;
+            if(file===selected) {
+              sec=number(rec.position_seconds);
+              dur=number(rec.duration_seconds);
+            }
+            file.timeline.time=Math.max(0,Math.round(sec));
+            file.timeline.duration=Math.max(0,Math.round(dur))||file.timeline.duration;
+            file.timeline.percent=file.timeline.duration ?
+              Math.min(100,100*file.timeline.time/file.timeline.duration):0;
+            staged={file:file,card:card,at:Date.now()};
+            try {
+              var opts={};Object.keys(file).forEach(function(k){opts[k]=file[k];});
+              opts.playlist=playlist;opts.return_result=true;
+              L.Player.play(opts);L.Player.playlist(playlist);
+            }catch(ignore){note('Не удалось открыть плеер');}
+          }
+        };
+      });
+      L.Select.show({title:'Файлы торрента',items:options});
     }
   }
   function status() {
@@ -1520,6 +1634,7 @@
     realtimeStop();
     stopOnlineResume();
     cancelTorrentResume();
+    cancelTorrentFocus();
     clearTorrPoll();
     if (sendTimer) clearTimeout(sendTimer);
     subscriptions.forEach(function(s) {
