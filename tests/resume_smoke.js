@@ -348,6 +348,9 @@ function runResumeSmoke(source) {
   assert(fastRows[0].titleNode.value==='' && 
     fastRows[0].imgNode.attr('data-src')===undefined,
     'initial file window does not wait for season images to download');
+  fastRows[1].listeners['visible']();
+  assert(fastRows[1].imgNode.attr('src')==='./img/img_broken.svg',
+    'a visible row first has the native placeholder while TMDB is loading');
   seasonCall({2:{episodes:[
     {episode_number:5,name:'Сохранённая серия',still_path:'/still5.jpg',
       air_date:'2026-10-20',runtime:44},
@@ -365,7 +368,12 @@ function runResumeSmoke(source) {
     'both episode preview stills and thumbnail metadata are restored');
   assert(fastRows[1].imgNode.attr('src')===
     'https://image.tmdb.org/t/p/w500/still6.jpg',
-    'preview is refreshed without waiting for additional scrolling');
+    'already visible preview is replaced without additional scrolling');
+  assert(fastRows[0].imgNode.attr('src')===undefined,
+    'offscreen episode still remains lazy-loaded, avoiding unnecessary downloads');
+  fastRows[0].listeners['visible']();
+  assert(fastRows[0].imgNode.attr('src')==='https://image.tmdb.org/t/p/w500/still5.jpg',
+    'offscreen preview begins loading when its row enters the viewport');
   assert(seasonRequests===1,'season details are fetched only once per fast picker');
 
   assert(fastEvents[0]==='list_open' &&
