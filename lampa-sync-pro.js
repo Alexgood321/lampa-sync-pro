@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.2-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.3-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.2';
+  var VERSION = '0.1.3';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -21,6 +21,7 @@
   var loaded = false, db = null, storageMode = 'indexeddb';
   var subscriptions = [], interval = null, sendTimer = null;
   var networkBusy = false, refreshing = false, refreshWaiters = [];
+  var lastSuccessfulSync = 0;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
   var resumeOverrides = {};
@@ -659,6 +660,7 @@
         if (userInitiated) note('Сеть или API недоступны (' + str(err.code || err.message).slice(0,40) + ')');
       } else {
         retryAfter = 0;
+        lastSuccessfulSync = Date.now();
         if (userInitiated) note('Синхронизировано. Ревизия ' + state.revision);
       }
     }
@@ -693,7 +695,7 @@
     var ep = rec.episode_key === 'movie' ? 'фильм' : str(rec.episode_key).replace(/^s(\d+):e(\d+)$/,'С$1E$2');
     var sec = Math.floor(number(rec.position_seconds));
     var time = Math.floor(sec/60) + ':' + ('0'+(sec%60)).slice(-2);
-    return '☁ Продолжить · ' + ep + ' · ' + time;
+    return '☁ Продолжить · ' + ep + ' · ' + (sec > 0 ? time : 'с начала');
   }
   function fullRoot(e) {
     if (e && e.body && typeof e.body.find==='function') return e.body;
@@ -838,7 +840,8 @@
     return {version:VERSION,ready:loaded,authenticated:!!state.auth,
       email:state.auth && state.auth.email || '',revision:state.revision,
       queued:state.outbox.length,device:state.deviceId,storage:storageMode,
-      capture:option('capture',true),busy:networkBusy,torrserver:torrStatus};
+      capture:option('capture',true),busy:networkBusy,torrserver:torrStatus,
+      lastSyncAt:lastSuccessfulSync};
   }
   // Native Lampa and My Store recognize plugin source by the real Lampa. API usage.
   // Only update metadata of this own installation; never change other plugins.
@@ -927,11 +930,23 @@
       };
       subscribe(L.Listener,'full',visibleCard);
       if (state.auth) sync(false);
-      interval=setInterval(function(){sync(false);},120000);
-      if (win.addEventListener) win.addEventListener('online',onOnline);
+      interval=setInterval(function(){sync(false);},60000);
+      if (win.addEventListener) {
+        win.addEventListener('online',onOnline);
+        win.addEventListener('focus',onForeground);
+        win.addEventListener('pageshow',onForeground);
+      }
+      if (win.document && typeof win.document.addEventListener==='function')
+        win.document.addEventListener('visibilitychange',onForeground);
     });
   }
   function onOnline(){retryAfter=0;sync(false);}
+  function onForeground(){
+    if (STOPPED || !loaded || !state.auth) return;
+    if (win.document && win.document.visibilityState==='hidden') return;
+    if (Date.now()-lastSuccessfulSync<20000) return;
+    sync(false);
+  }
   function destroy() {
     STOPPED=true;
     clearTorrPoll();
@@ -942,7 +957,13 @@
         s.listener.remove(s.kind,s.handler);
     });
     subscriptions=[];
-    if (win.removeEventListener) win.removeEventListener('online',onOnline);
+    if (win.removeEventListener) {
+      win.removeEventListener('online',onOnline);
+      win.removeEventListener('focus',onForeground);
+      win.removeEventListener('pageshow',onForeground);
+    }
+    if (win.document && typeof win.document.removeEventListener==='function')
+      win.document.removeEventListener('visibilitychange',onForeground);
     if (db) {try{db.close();}catch(ignore){}}
     if (win.__AlexgoodPluginRuntime &&
         win.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js']) {
