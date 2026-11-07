@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "plugins": [
+    {
+      "name": "Lampa Sync Pro",
+      "path": "lampa-sync-pro.js",
+      "categories": [
+        "Мои",
+        "Рейтинги и сервисы"
+      ],
+      "author": "Alexgood321",
+      "descr": "Тестовая альфа: синхронизация торрент-прогресса между устройствами через Supabase. Требуется вход; HDRezka, CUB и Trakt не затрагиваются."
+    }
+  ]
+}

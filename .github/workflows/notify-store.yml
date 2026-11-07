@@ -1,0 +1,36 @@
+name: Notify Lampa My Store of plugin releases
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.js'
+      - 'lampa-plugins.json'
+      - '.github/workflows/notify-store.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger central catalog sync
+        env:
+          STORE_DISPATCH_TOKEN: ${{ secrets.STORE_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$STORE_DISPATCH_TOKEN" ]; then
+            echo "::error title=My Store dispatch disabled::STORE_DISPATCH_TOKEN is missing. Configure this repository secret with Contents: write access to Alexgood321/store."
+            echo "Add STORE_DISPATCH_TOKEN to this repository's Actions secrets." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          payload=$(printf '{"event_type":"lampa-plugin-updated","client_payload":{"repository":"%s","sha":"%s"}}' "$GITHUB_REPOSITORY" "$GITHUB_SHA")
+          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 5 \
+            -X POST \
+            -H "Authorization: Bearer $STORE_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "$payload" \
+            "https://api.github.com/repos/Alexgood321/store/dispatches"
