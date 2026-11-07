@@ -116,7 +116,7 @@ function runAutoEpisodeCompleteSmoke(source){
   ok(d.marks(3).length===0,'replaying an earlier episode cannot auto-complete');d.dispose();
   var e=rig({off:true});e.launch(3);e.close();e.launch(4);
   ok(e.marks(3).length===0,'disabled setting suppresses auto-completion');e.dispose();
-  var f=rig();f.launch(3);f.video.emit('timeupdate',{current:120,duration:2700});
+  var f=rig();f.launch(3,undefined,false);f.video.emit('timeupdate',{current:120,duration:2700});
   f.close();f.launch(4);
   ok(f.marks(3).length===0,'a known native timecode disables the heuristic');f.dispose();
   var g=rig();g.launch(3,undefined,false);g.close();g.launch(4);
