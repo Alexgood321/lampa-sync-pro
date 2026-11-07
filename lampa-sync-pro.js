@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.4-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.5-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,19 +12,25 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.4';
+  var VERSION = '0.1.5';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
   var STORE_KEY = 'lampa_sync_pro_local_v1';
   var STOPPED = false;
   var loaded = false, db = null, storageMode = 'indexeddb';
-  var subscriptions = [], interval = null, sendTimer = null;
+  var subscriptions = [], sendTimer = null;
   var networkBusy = false, refreshing = false, refreshWaiters = [];
   var lastSuccessfulSync = 0;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
   var resumeOverrides = {};
+  // Supabase Realtime Phoenix 1.0.0; only the per-user revision head is replicated.
+  var rtSocket=null, rtAccount='', rtTopic='', rtJoinRef='', rtRef=0;
+  var rtJoined=false, rtStarting=false, rtState='disconnected', rtAttempt=0;
+  var rtSubscriptions=[], rtHeartbeat=null, rtPingRef='', rtPingAt=0;
+  var rtJoinTimeout=null, rtReconnect=null, rtAuthTimer=null, rtPullTimer=null;
+  var rtPendingRevision=0, rtLastEventAt=0;
   var state = { schema: 1, userId: '', auth: null, deviceId: '', seq: 0,
     revision: 0, snapshot: null, outbox: [], lastTorrent: null };
 
@@ -150,6 +156,7 @@
     if (!data || !data.access_token || !data.refresh_token || !data.user || !validUUID(data.user.id)) return false;
     var user = str(data.user.id);
     if (state.userId && state.userId !== user) {
+      realtimeStop();
       state.revision = 0;
       state.outbox = [];
       state.snapshot = null;
@@ -164,6 +171,7 @@
       expires_at: Date.now() + Math.max(1,number(data.expires_in))*1000,
       email: str(data.user.email) };
     save();
+    if (rtJoined && rtAccount===user) realtimeAuthSchedule();
     return true;
   }
   function token(done) {
@@ -196,6 +204,7 @@
   function selectAccount(data) {
     if (!storeAuth(data)) { note('Ошибка данных авторизации'); return; }
     retryAfter = 0;
+    realtimeStart();
     sync(true);
   }
   function prompt(title, next) {
@@ -224,6 +233,7 @@
     });
   }
   function logout() {
+    realtimeStop();
     clearTorrPoll();
     lastTorrent=null;
     var oldJwt = state.auth && state.auth.access_token;
@@ -663,7 +673,229 @@
         lastSuccessfulSync = Date.now();
         if (userInitiated) note('Синхронизировано. Ревизия ' + state.revision);
       }
+      realtimeDrain();
     }
+  }
+  function realtimeAllowed() {
+    return !STOPPED && loaded && !!state.auth && validUUID(state.userId) &&
+      !(win.document && win.document.visibilityState==='hidden') &&
+      (!win.navigator || win.navigator.onLine!==false);
+  }
+  function realtimeClearTimers() {
+    if (rtHeartbeat) clearInterval(rtHeartbeat);
+    if (rtJoinTimeout) clearTimeout(rtJoinTimeout);
+    if (rtReconnect) clearTimeout(rtReconnect);
+    if (rtAuthTimer) clearTimeout(rtAuthTimer);
+    if (rtPullTimer) clearTimeout(rtPullTimer);
+    rtHeartbeat=rtJoinTimeout=rtReconnect=rtAuthTimer=rtPullTimer=null;
+  }
+  function realtimeStop() {
+    realtimeClearTimers();
+    var socket=rtSocket;
+    rtSocket=null;
+    rtAccount='';
+    rtTopic='';
+    rtJoined=false;
+    rtStarting=false;
+    rtJoinRef='';
+    rtSubscriptions=[];
+    rtPingRef='';
+    rtPingAt=0;
+    rtPendingRevision=0;
+    rtAttempt=0;
+    rtState='disconnected';
+    if (socket) {
+      try {
+        socket.onopen=socket.onmessage=socket.onerror=socket.onclose=null;
+        socket.close();
+      } catch(ignore){}
+    }
+  }
+  function realtimeRetry() {
+    if (!realtimeAllowed() || rtReconnect) return;
+    rtAttempt=Math.min(rtAttempt+1,6);
+    var wait=Math.min(30000,1000*Math.pow(2,rtAttempt-1));
+    rtState='reconnecting';
+    rtReconnect=setTimeout(function(){
+      rtReconnect=null;
+      realtimeStart();
+    },wait);
+  }
+  function realtimeDrop(socket) {
+    if (socket && rtSocket!==socket) return;
+    if (rtHeartbeat) clearInterval(rtHeartbeat);
+    if (rtJoinTimeout) clearTimeout(rtJoinTimeout);
+    if (rtAuthTimer) clearTimeout(rtAuthTimer);
+    rtHeartbeat=rtJoinTimeout=rtAuthTimer=null;
+    rtJoined=false;
+    rtStarting=false;
+    rtSubscriptions=[];
+    rtPingRef='';
+    rtPingAt=0;
+    var previous=rtSocket;
+    rtSocket=null;
+    try{
+      if(previous){
+        previous.onopen=previous.onmessage=previous.onerror=previous.onclose=null;
+        previous.close();
+      }
+    }catch(ignore){}
+    if (realtimeAllowed()) realtimeRetry();
+    else rtState='paused';
+  }
+  function realtimeSend(topic,event,payload,joinRef) {
+    if (!rtSocket || rtSocket.readyState!==1) return '';
+    var ref=String(++rtRef);
+    try {
+      rtSocket.send(JSON.stringify({
+        topic:topic,event:event,payload:payload||{},ref:ref,
+        join_ref:joinRef===undefined?rtJoinRef:joinRef
+      }));
+      return ref;
+    }catch(e){return '';}
+  }
+  function realtimeAuthSchedule() {
+    if (rtAuthTimer) clearTimeout(rtAuthTimer);
+    rtAuthTimer=null;
+    if (!rtJoined || !state.auth || rtAccount!==state.userId) return;
+    var delay=Math.max(1000,number(state.auth.expires_at)-Date.now()-65000);
+    rtAuthTimer=setTimeout(function(){
+      rtAuthTimer=null;
+      var account=rtAccount, socket=rtSocket;
+      token(function(err,jwt){
+        if (!rtJoined || rtSocket!==socket || rtAccount!==account) return;
+        if (err || !jwt || !realtimeSend(rtTopic,'access_token',{access_token:jwt}))
+          return realtimeDrop(socket);
+        realtimeAuthSchedule();
+      });
+    },delay);
+  }
+  function realtimeHeartbeatStart(socket) {
+    if (rtHeartbeat) clearInterval(rtHeartbeat);
+    rtHeartbeat=setInterval(function(){
+      if (rtSocket!==socket || !rtJoined) return;
+      if (rtPingRef && Date.now()-rtPingAt>45000)
+        return realtimeDrop(socket);
+      if (!rtPingRef) {
+        rtPingRef=realtimeSend('phoenix','heartbeat',{},null);
+        rtPingAt=Date.now();
+        if (!rtPingRef) realtimeDrop(socket);
+      }
+    },20000);
+  }
+  function realtimeDrain() {
+    if (!rtPendingRevision || rtPendingRevision<=state.revision) {
+      rtPendingRevision=0;
+      return;
+    }
+    if (networkBusy || rtPullTimer || STOPPED || !state.auth) return;
+    var wait=Math.max(300,retryAfter-Date.now());
+    rtPullTimer=setTimeout(function(){
+      rtPullTimer=null;
+      if (!rtPendingRevision || rtPendingRevision<=state.revision) {
+        rtPendingRevision=0;return;
+      }
+      if (networkBusy) return;
+      rtPendingRevision=0;
+      sync(false);
+    },wait);
+  }
+  function realtimeMessage(socket,event) {
+    if (!event || rtSocket!==socket || rtAccount!==state.userId) return;
+    var msg;
+    try {msg=JSON.parse(event.data);}catch(ignore){return;}
+    if (!msg || typeof msg!=='object' || Array.isArray(msg)) return;
+    if (msg.event==='phx_reply' && msg.topic==='phoenix' && msg.ref===rtPingRef) {
+      rtPingRef='';rtPingAt=0;return;
+    }
+    if (msg.topic!==rtTopic) return;
+    if (msg.event==='phx_reply' && msg.ref===rtJoinRef) {
+      if (!msg.payload || msg.payload.status!=='ok' ||
+          !msg.payload.response || !Array.isArray(msg.payload.response.postgres_changes) ||
+          !msg.payload.response.postgres_changes.length) return realtimeDrop(socket);
+      rtSubscriptions=msg.payload.response.postgres_changes.map(function(item){return String(item.id);});
+      rtJoined=true;
+      rtState='connected';
+      rtAttempt=0;
+      if (rtJoinTimeout) clearTimeout(rtJoinTimeout);
+      rtJoinTimeout=null;
+      realtimeHeartbeatStart(socket);
+      realtimeAuthSchedule();
+      // Close the gap between the previous HTTP snapshot and channel subscription.
+      if (!networkBusy) sync(false);
+      return;
+    }
+    if (msg.event==='phx_error' || msg.event==='phx_close') return realtimeDrop(socket);
+    if (msg.event==='system' && msg.payload && msg.payload.extension==='postgres_changes' &&
+        msg.payload.status && msg.payload.status!=='ok') return realtimeDrop(socket);
+    if (!rtJoined || msg.event!=='postgres_changes') return;
+    var payload=msg.payload || {};
+    var ids=payload.ids || [];
+    if (!Array.isArray(ids) || !ids.some(function(id){
+      return rtSubscriptions.indexOf(String(id))>=0;
+    })) return;
+    var data=payload.data||{},row=data.record||{};
+    if (data.schema!=='public' || data.table!=='lsp_sync_heads' ||
+        (data.type!=='INSERT' && data.type!=='UPDATE') ||
+        str(row.user_id).toLowerCase()!==state.userId.toLowerCase()) return;
+    var rev=Number(row.revision);
+    if (!isFinite(rev) || rev<0 || Math.floor(rev)!==rev || rev<=state.revision) return;
+    rtLastEventAt=Date.now();
+    rtPendingRevision=Math.max(rtPendingRevision,rev);
+    realtimeDrain();
+  }
+  function realtimeStart() {
+    if (!realtimeAllowed()) {
+      if (!win.WebSocket) rtState='unsupported';
+      return;
+    }
+    if (typeof win.WebSocket!=='function') {
+      rtState='unsupported';
+      return; // Manual sync and foreground REST remain available.
+    }
+    if (rtSocket || rtStarting || rtReconnect) return;
+    rtStarting=true;
+    rtState='connecting';
+    var account=state.userId;
+    token(function(err,jwt){
+      if (STOPPED || !realtimeAllowed() || state.userId!==account) {
+        rtStarting=false;return;
+      }
+      if (err || !jwt) {
+        rtStarting=false;
+        return realtimeRetry();
+      }
+      var socket;
+      try {
+        socket=new win.WebSocket(BASE.replace(/^http/,'ws')+
+          '/realtime/v1/websocket?apikey='+encodeURIComponent(KEY)+'&vsn=1.0.0');
+      } catch(e) {
+        rtStarting=false;
+        return realtimeRetry();
+      }
+      rtSocket=socket;
+      rtAccount=account;
+      rtTopic='realtime:lsp-sync-'+account;
+      socket.onopen=function(){
+        if (socket!==rtSocket || account!==state.userId) return;
+        rtStarting=false;
+        rtJoinRef=realtimeSend(rtTopic,'phx_join',{
+          config:{private:false,postgres_changes:[{
+            event:'*',schema:'public',table:'lsp_sync_heads',
+            filter:'user_id=eq.'+account
+          }]},
+          access_token:jwt
+        },null);
+        if (!rtJoinRef) return realtimeDrop(socket);
+        rtJoinTimeout=setTimeout(function(){
+          rtJoinTimeout=null;
+          if (rtSocket===socket && !rtJoined) realtimeDrop(socket);
+        },12000);
+      };
+      socket.onmessage=function(event){realtimeMessage(socket,event);};
+      socket.onerror=function(){realtimeDrop(socket);};
+      socket.onclose=function(){realtimeDrop(socket);};
+    });
   }
   function findCachedResume(key) {
     if (Object.prototype.hasOwnProperty.call(resumeOverrides,key)) return resumeOverrides[key];
@@ -841,7 +1073,7 @@
       email:state.auth && state.auth.email || '',revision:state.revision,
       queued:state.outbox.length,device:state.deviceId,storage:storageMode,
       capture:option('capture',true),busy:networkBusy,torrserver:torrStatus,
-      lastSyncAt:lastSuccessfulSync};
+      realtime:rtState,lastRealtimeAt:rtLastEventAt,lastSyncAt:lastSuccessfulSync};
   }
   // Native Lampa and My Store recognize plugin source by the real Lampa. API usage.
   // Only update metadata of this own installation; never change other plugins.
@@ -885,7 +1117,7 @@
     button('lsp_account_status','Аккаунт / состояние','Показать подключение и очередь',function(){
       var s=status();
       note(s.authenticated ? ('Подключён: ' + s.email + ', очередь: ' + s.queued +
-        ', ревизия: ' + s.revision) : 'Аккаунт не подключён');
+        ', ревизия: ' + s.revision + ', Realtime: ' + s.realtime) : 'Аккаунт не подключён');
     });
     button('lsp_login','Войти','Email и пароль Supabase Auth',function(){login(false);});
     button('lsp_register','Зарегистрироваться','При включённой проверке email придёт письмо',function(){login(true);});
@@ -929,31 +1161,36 @@
         ready: true, version: VERSION, channel: CHANNEL, started_at: Date.now()
       };
       subscribe(L.Listener,'full',visibleCard);
-      if (state.auth) sync(false);
-      interval=setInterval(function(){
-        if (win.document && win.document.visibilityState==='hidden') return;
-        sync(false);
-      },30000);
+      if (state.auth) { sync(false); realtimeStart(); }
       if (win.addEventListener) {
         win.addEventListener('online',onOnline);
+        win.addEventListener('offline',onOffline);
         win.addEventListener('focus',onForeground);
         win.addEventListener('pageshow',onForeground);
       }
       if (win.document && typeof win.document.addEventListener==='function')
-        win.document.addEventListener('visibilitychange',onForeground);
+        win.document.addEventListener('visibilitychange',onVisibility);
     });
   }
-  function onOnline(){retryAfter=0;sync(false);}
+  function onOnline(){retryAfter=0;realtimeStart();sync(false);}
+  function onOffline(){realtimeStop();rtState='offline';}
+  function onVisibility(){
+    if (win.document && win.document.visibilityState==='hidden') {
+      realtimeStop();
+      rtState='paused';
+    } else onForeground();
+  }
   function onForeground(){
     if (STOPPED || !loaded || !state.auth) return;
     if (win.document && win.document.visibilityState==='hidden') return;
+    realtimeStart();
     if (Date.now()-lastSuccessfulSync<20000) return;
     sync(false);
   }
   function destroy() {
     STOPPED=true;
+    realtimeStop();
     clearTorrPoll();
-    if (interval) clearInterval(interval);
     if (sendTimer) clearTimeout(sendTimer);
     subscriptions.forEach(function(s) {
       if (s.listener && typeof s.listener.remove==='function')
@@ -962,11 +1199,12 @@
     subscriptions=[];
     if (win.removeEventListener) {
       win.removeEventListener('online',onOnline);
+      win.removeEventListener('offline',onOffline);
       win.removeEventListener('focus',onForeground);
       win.removeEventListener('pageshow',onForeground);
     }
     if (win.document && typeof win.document.removeEventListener==='function')
-      win.document.removeEventListener('visibilitychange',onForeground);
+      win.document.removeEventListener('visibilitychange',onVisibility);
     if (db) {try{db.close();}catch(ignore){}}
     if (win.__AlexgoodPluginRuntime &&
         win.__AlexgoodPluginRuntime['alexgood321/lampa-sync-pro/lampa-sync-pro.js']) {
