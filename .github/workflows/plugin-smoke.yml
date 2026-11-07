@@ -30,6 +30,8 @@ jobs:
         run: node tests/plugin_smoke.js
       - name: Cloud card and TorrServer resume
         run: node tests/resume_smoke.js
+      - name: Cold TorrServer metadata / single-click retries
+        run: node tests/torrent_resume_retry_smoke.js
       - name: TorrServer TrackTimecode /viewed
         run: node tests/torrserver_viewed_smoke.js
       - name: Foreground REST fallback (no polling)
