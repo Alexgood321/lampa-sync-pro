@@ -1709,18 +1709,22 @@
         row.on('hover:enter',function(){
           enrichmentClosed=true;
           staged={file:el,card:card,at:Date.now()};
+          var phase='history';
           try {
             if(L.Favorite && typeof L.Favorite.add==='function' && card.id)
               L.Favorite.add('history',card,100);
+            phase='play';
             L.Player.play(el);
+            phase='callback';
             if(typeof L.Player.callback==='function')
               L.Player.callback(function(){L.Controller.toggle('modal');});
+            phase='playlist';
             L.Player.playlist(playlist);
+            phase='event';
             L.Listener.send('torrent_file',{type:'onenter',element:el,item:row,
               items:entries,params:params});
           }catch(error){
             // Do not expose stream URLs or tokens through diagnostics.
-            var phase='player';
             try { if(win.console && win.console.warn)
               win.console.warn('[Lampa Sync Pro] Episode launch failed:',error && error.name || 'error'); }
             catch(ignore){}
