@@ -1639,7 +1639,7 @@
           try{
             var img=row.find('img');
             if(img && img.length){
-              img.addClass('loaded');
+              if(img[0])img[0].onload=function(){img.addClass('loaded');};
               img.attr('src',img.attr('data-src') || el.img);
             }
           }catch(ignore){}
@@ -1727,10 +1727,13 @@
                     file.thumbnail=imageUrl;
                     var img=x.item.find('img');
                     if(img && img.length && typeof img.attr==='function'){
+                      // Keep Lampa's lazy image behavior: don't download every
+                      // still for 100-episode seasons before scrolling.
+                      var alreadyVisible=!!img.attr('src');
                       img.attr('data-src',imageUrl);
-                      // If the lazy-visible event already fired, replace the
-                      // placeholder immediately, with no extra scroll needed.
-                      img.attr('src',imageUrl);
+                      // If visible already (the placeholder loaded first),
+                      // replace its src immediately, without scrolling.
+                      if(alreadyVisible)img.attr('src',imageUrl);
                     }
                   }
                 }
