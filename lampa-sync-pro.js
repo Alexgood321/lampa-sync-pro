@@ -1453,8 +1453,8 @@
       }
       return normalized(a).localeCompare(normalized(b));
     });
-    var params={movie:card,files:entries},playlist=[],rows=[];
-    var recipe=rec.source_recipe || {},checkpoint=rec.episode_key.match(/^s(\d+):e(\d+)$/);
+    var params={movie:card,files:entries},playlist=[],rows=[],modalOpened=false;
+    var recipe=rec.source_recipe || {},checkpoint=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
     var desiredIndex=Number(recipe.file_index),desiredPath=normalPath(recipe.file_path);
     var watched=rec.watched_state==='completed';
     function isResumeFile(file) {
@@ -1502,9 +1502,6 @@
           }catch(ignore){}
         };
         var matchScore=isResumeFile(itemData);
-        if(matchScore && (!rows.selected || matchScore>rows.selected.score)){
-          rows.selected={file:itemData,score:matchScore};
-        }
         var road=itemData.timeline;
         if(matchScore && rec.position_seconds>0 && !watched &&
           road && typeof road==='object') {
@@ -1543,6 +1540,7 @@
           L.Modal.close();
           L.Listener.send('torrent_file',{type:'list_close'});
         }});
+      modalOpened=true;
       L.Listener.send('torrent_file',{type:'list_open',items:entries,params:params});
       rows.forEach(function(x) {
         var row=x.item,el=x.file;
@@ -1564,6 +1562,15 @@
         row.on('hover:focus',function(){
           L.Listener.send('torrent_file',{type:'onfocus',element:el,item:row,
             items:entries,params:params});
+        });
+        row.on('visible',function(){
+          try{
+            var img=row.find('img');
+            if(img && img.length){
+              img.addClass('loaded');
+              img.attr('src',img.attr('data-src') || el.img);
+            }
+          }catch(ignore){}
         });
         // Preserve NUM's IINA / player options by forwarding long-press.
         row.on('hover:long',function(){
@@ -1600,9 +1607,13 @@
       }
       return true;
     }catch(e){
-      // Fallback only before opening native modal. After modal opened it is
-      // safer to leave that UI intact than to display two overlapping pickers.
-      return !!(L.Modal && typeof L.Modal.opened==='function' && L.Modal.opened());
+      // Never leave a blank fast picker on an exceptional WebView: close our
+      // own modal before falling back to the original Lampa selector.
+      if(modalOpened){
+        try{L.Modal.close();}catch(ignore){}
+        try{L.Listener.send('torrent_file',{type:'list_close'});}catch(ignore){}
+      }
+      return false;
     }
   }
   function nativeTorrentSelectorAllowed() {
