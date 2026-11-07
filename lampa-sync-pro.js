@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.3-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.4-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.3';
+  var VERSION = '0.1.4';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -930,7 +930,10 @@
       };
       subscribe(L.Listener,'full',visibleCard);
       if (state.auth) sync(false);
-      interval=setInterval(function(){sync(false);},60000);
+      interval=setInterval(function(){
+        if (win.document && win.document.visibilityState==='hidden') return;
+        sync(false);
+      },30000);
       if (win.addEventListener) {
         win.addEventListener('online',onOnline);
         win.addEventListener('focus',onForeground);
