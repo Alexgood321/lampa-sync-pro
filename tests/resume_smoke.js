@@ -22,9 +22,14 @@ function runResumeSmoke(source) {
     {id:4,path:'S02E05.mkv',path_human:'S02E05.mkv'},
     {id:5,path:'S02E06.mkv',path_human:'S02E06.mkv'}
   ];
-  var button=null,played=null,playlist=null,random=0,db={},storage={},
+  var button=null,played=null,playlist=null,random=0,db={},storage={},sourceMenuInsertions=0,
     openedOnline=0,selectedOnline=[],seededRoad=null,onlineMode=false;
-  var anchor={length:1,last:function(){return this;},after:function(b){button=b;}};
+  var anchor={length:1,last:function(){return this;},
+    after:function(){sourceMenuInsertions++;}};
+  var playAnchor={length:1,first:function(){return this;},after:function(b){button=b;}};
+  var cardToolbar={length:1,last:function(){return this;},find:function(sel){
+    return sel==='.button--play'?playAnchor:empty;},
+    prepend:function(b){button=b;}};
   var empty={length:0,last:function(){return this;},remove:function(){},append:function(){},trigger:function(){}};
   var onlineAnchor={length:1,last:function(){return this;},trigger:function(e){if(e==='hover:enter'){openedOnline++;onlineMode=true;}return this;}};
   function onlineEpisode(num) {
@@ -41,6 +46,7 @@ function runResumeSmoke(source) {
   var onlinePanel={find:function(selector){return selector==='.online-prestige--full'?episodeList:empty;}};
   var root={find:function(sel){
     if(sel==='.view--torrent')return anchor;
+    if(sel==='.full-start-new__buttons')return cardToolbar;
     if(sel==='.view--online')return onlineAnchor;
     if(sel==='.view--lsp-resume')return empty;
     return empty;
@@ -48,7 +54,9 @@ function runResumeSmoke(source) {
   function dom(html){
     if(html && html.nodeMock)return html;
     if(String(html).indexOf('view--lsp-resume')!==-1){
-      var obj={text:function(t){this.value=t;return this;},
+      var obj={html:html,attrs:{},value:'',
+        find:function(sel){if(sel==='span')return {text:function(t){obj.value=t;return this;}};return empty;},
+        attr:function(k,v){this.attrs[k]=v;return this;},
         on:function(k,cb){this[k]=cb;return this;}};
       return obj;
     }
@@ -107,7 +115,13 @@ function runResumeSmoke(source) {
     app.emit('full',{type:'complite',data:{movie:movie},body:root});
   }
   showCard();
-  assert(!!button,'cloud resume button appears');
+  assert(!!button,'cloud resume button appears directly on the card toolbar');
+  assert(sourceMenuInsertions===0,'source picker stays free of duplicate Continue entry');
+  assert(button.html.indexOf('<svg')!==-1 &&
+    button.attrs['aria-label'].indexOf('Продолжить')!==-1,
+    'visible action has an icon, description and accessible label');
+  assert(button.html.indexOf('view--lsp-resume')!==-1,
+    'card action uses its own class, separate from native source selection');
   assert(typeof button['hover:enter']==='function','button has action');
   assert(button.value.indexOf('С2E5')!==-1 && button.value.indexOf('18:40')!==-1,
     'button labels the episode and timecode');
