@@ -1238,7 +1238,7 @@
   function normalPath(v) { return str(v).replace(/\\/g,'/').replace(/^\/+/,'').toLowerCase(); }
   function torFiles(hash,cb) {
     if (!L.Torserver || typeof L.Torserver.files!=='function') return cb(new Error('torrserver_unavailable'));
-    var fired=false, timer=setTimeout(function(){ if(!fired){fired=true;cb(new Error('timeout'));}},8500);
+    var fired=false, timer=setTimeout(function(){ if(!fired){fired=true;cb(new Error('timeout'));}},5000);
     function done(err,res){if(fired)return;fired=true;clearTimeout(timer);cb(err,res);}
     try {
       L.Torserver.files(hash,function(res) {
@@ -1502,6 +1502,7 @@
     STOPPED=true;
     realtimeStop();
     stopOnlineResume();
+    cancelTorrentResume();
     clearTorrPoll();
     if (sendTimer) clearTimeout(sendTimer);
     subscriptions.forEach(function(s) {
