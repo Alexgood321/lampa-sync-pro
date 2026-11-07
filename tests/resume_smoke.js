@@ -161,6 +161,9 @@ function runResumeSmoke(source) {
     'button labels the episode and timecode');
   assert(button.episode==='S02E05',
     'season and episode are visible on mobile without relying on a hidden span');
+  assert(!sourceButton.html.includes('lsp-resume-episode') &&
+    sourceButton.value.includes('С2E5'),
+    'source menu uses only the full label, without duplicate episode badge');
   button['hover:enter']();
   assert(openedTorrents.length===1,'Continue opens native torrent file cards');
   assert(played===null,'Continue never autoplays the saved episode');
@@ -176,6 +179,18 @@ function runResumeSmoke(source) {
   assert(played===null,'focusing a series row does not launch playback');
   sourceButton['hover:enter']();
   assert(openedTorrents.length===2,'source menu Continue opens the same torrent cards');
+  var beforeFocus=nativeFocused.length;
+  app.emit('torrent_file',{type:'render',element:{id:4,path:'S02E05.mkv',
+    season:2,episode:5,torrent_hash:'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'},
+    item:{0:{offsetParent:{}}},params:{movie:movie}});
+  assert(nativeFocused.length===beforeFocus &&
+    !timers.some(function(t){return t.active&&t.ms===80;}),
+    'event from a different torrent cannot steal file-list focus');
+  app.emit('torrent_file',{type:'render',element:{id:5,path:'S02E06.mkv',
+    season:2,episode:6,torrent_hash:rec.source_recipe.infohash},
+    item:{0:{offsetParent:{}}},params:{movie:movie}});
+  assert(!timers.some(function(t){return t.active&&t.ms===80;}),
+    'next episode does not override saved-episode selection');
   assert(sourceEntries.length===1,'source menu has no duplicates');
   rec.watched_state='completed';
   showCard();
@@ -201,6 +216,13 @@ function runResumeSmoke(source) {
     'manual choice of saved episode resumes at confirmed timecode');
   assert(Array.isArray(playlist) && playlist.length===2,
     'fallback picker preserves the native player playlist');
+  androidMode=false;internalTorrent=true;
+  torrentItems.splice(1,1);
+  selectedUI=null;played=null;
+  showCard();button['hover:enter']();
+  assert(selectedUI && selectedUI.items.length===1 && played===null,
+    'a one-file torrent shows a chooser instead of triggering Lampa ten-second autoplay');
+  torrentItems.push({id:5,path:'S02E06.mkv',path_human:'S02E06.mkv'});
   assert(!urls.some(function(u){return u.indexOf('/stream?link=')!==-1;}),
     'stream traffic never passes through Supabase');
   androidMode=false;internalTorrent=true;
