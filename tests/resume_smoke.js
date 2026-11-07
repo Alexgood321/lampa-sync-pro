@@ -555,6 +555,30 @@ function runResumeSmoke(source) {
   button['hover:enter']();
   assert(selectedOnline[2]===6,'completed online episode advances to the next available episode');
   assert(seededRoad.hash==='online-hash-5','completed next episode does not inherit old timecode');
+  // Native cancel must release the spinner before the next click; navigation
+  // to a different card must cancel a still-active request as well.
+  rec={episode_key:'s2:e5',source_key:'torrent:0123456789ABCDEF0123456789ABCDEF01234567:4',
+    source_kind:'torrent',source_recipe:{infohash:'0123456789ABCDEF0123456789ABCDEF01234567',
+      file_index:4,file_path:'S02E05.mkv'},position_seconds:1120,
+    duration_seconds:2700,watched_state:'in_progress',revision:3};
+  var normalTemplate=win.Lampa.Template;
+  win.Lampa.Template=null; // Force native Torrent.open instead of fast modal.
+  showCard();
+  button['hover:enter']();
+  assert(button.hasClass('lsp-resume-loading'),
+    'native torrent picker stays busy until its view is visible');
+  app.emit('torrent_file',{type:'list_close'});
+  assert(!button.hasClass('lsp-resume-loading'),
+    'closing native torrent picker removes spinner without waiting for timeout');
+  button['hover:enter']();
+  var leavingButton=button;
+  assert(leavingButton.hasClass('lsp-resume-loading'),
+    'another click can start after cancel without a reload');
+  app.emit('full',{type:'complite',data:{movie:{id:8000,source:'tmdb',
+    media_type:'tv',name:'Other TV'}},body:root});
+  assert(!leavingButton.hasClass('lsp-resume-loading'),
+    'navigating to a different film cancels old pending spinner');
+  win.Lampa.Template=normalTemplate;
   rec.watched_state='in_progress';
   rec=null;
   showCard();
