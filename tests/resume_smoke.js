@@ -358,6 +358,29 @@ function runResumeSmoke(source) {
   fastOpened[0].onBack();
   assert(fastModalClosed && fastEvents[fastEvents.length-1]==='list_close',
     'closing the fast picker sends NUM-compatible list_close');
+  // Safety: if a custom Lampa skin lacks a working torrent template,
+  // Continue falls back to the original native picker, without blank UI.
+  var previousTemplate=win.Lampa.Template.get;
+  var beforeFallback=openedTorrents.length;
+  var beforeFastModal=fastOpened.length;
+  win.Lampa.Template.get=function(){throw new Error('unavailable template');};
+  showCard();
+  button['hover:enter']();
+  assert(fastFilesRequests===2 && openedTorrents.length===beforeFallback+1,
+    'template failure falls back to original native picker');
+  assert(fastOpened.length===beforeFastModal,'template failure opens no blank custom modal');
+  win.Lampa.Template.get=previousTemplate;
+  // A failure during Modal.update must close the partially created modal
+  // before invoking the compatibility path, never stack two dialogs.
+  var priorUpdate=win.Lampa.Modal.update,prevNativeCount=openedTorrents.length;
+  var prevEventCount=fastEvents.filter(function(x){return x==='list_close';}).length;
+  win.Lampa.Modal.update=function(){throw new Error('broken modal');};
+  showCard();button['hover:enter']();
+  assert(fastModalClosed && openedTorrents.length===prevNativeCount+1,
+    'modal-render failure closes fast window and restores native picker');
+  assert(fastEvents.filter(function(x){return x==='list_close';}).length===prevEventCount+1,
+    'exceptional fast window closes NUM list state');
+  win.Lampa.Modal.update=priorUpdate;
   // Native Lampac online resume remains part of our own Sync Pro button.
   rec={episode_key:'s2:e5',source_key:'lampac:kodik:88',source_kind:'lampac',
     source_recipe:{balanser:'kodik',voice_id:'88',voice_name:'Studio',
