@@ -27,7 +27,7 @@ function runResumeSmoke(source) {
   ];
   var button=null,sourceButton=null,sourceEntries=[],sourceMenuPosition='',
     played=null,playlist=null,random=0,db={},storage={},
-    cardOrder=['native-play','hdrezka-play'],
+    cardOrder=['native-play','hdrezka-play'],resumeScope=false,
     openedOnline=0,selectedOnline=[],seededRoad=null,onlineMode=false;
   function visualOrder() {
     var rank={'sync-resume':-3,'native-play':-2,'hdrezka-play':-1};
@@ -43,7 +43,9 @@ function runResumeSmoke(source) {
   var playAnchor={length:1,first:function(){return this;},after:function(b){button=b;}};
   var cardToolbar={length:1,last:function(){return this;},find:function(sel){
     return sel==='.button--play'?playAnchor:empty;},
-    prepend:function(b){button=b;cardOrder.unshift('sync-resume');}};
+    prepend:function(b){button=b;cardOrder.unshift('sync-resume');},
+    addClass:function(s){if(s==='lsp-has-resume')resumeScope=true;return this;},
+    removeClass:function(s){if(s==='lsp-has-resume')resumeScope=false;return this;}};
   var empty={length:0,last:function(){return this;},remove:function(){},append:function(){},trigger:function(){}};
   var onlineAnchor={length:1,last:function(){return this;},trigger:function(e){if(e==='hover:enter'){openedOnline++;onlineMode=true;}return this;}};
   function onlineEpisode(num) {
@@ -63,7 +65,8 @@ function runResumeSmoke(source) {
   var root={find:function(sel){
     if(sel==='.view--torrent' || sel==='.buttons--container > .view--torrent')return anchor;
     if(sel==='.buttons--container')return sourceMenu;
-    if(sel==='.full-start-new__buttons')return cardToolbar;
+    if(sel==='.full-start-new__buttons' ||
+      sel==='.full-start-new__buttons, .full-start__buttons')return cardToolbar;
     if(sel==='.view--online')return onlineAnchor;
     if(sel==='.view--lsp-resume')return {remove:function(){
       button=null;cardOrder=cardOrder.filter(function(x){return x!=='sync-resume';});
@@ -161,6 +164,8 @@ function runResumeSmoke(source) {
     'initial DOM insertion puts Continue first');
   assert(styleNodes.length===1 && styleNodes[0].id==='lsp-card-action-order',
     'one persistent stylesheet is installed for asynchronous priority clones');
+  assert(resumeScope && styleNodes[0].textContent.includes('.lsp-has-resume'),
+    'priority rules activate only on cards with a Continue action');
   assert(styleNodes[0].textContent.indexOf('.view--lsp-resume{order:-3 !important;}')>=0 &&
     styleNodes[0].textContent.indexOf('.button--play{order:-2 !important;}')>=0 &&
     styleNodes[0].textContent.indexOf('.button--priority{order:-1 !important;}')>=0,
@@ -301,6 +306,9 @@ function runResumeSmoke(source) {
   assert(selectedOnline[2]===6,'completed online episode advances to the next available episode');
   assert(seededRoad.hash==='online-hash-5','completed next episode does not inherit old timecode');
   rec.watched_state='in_progress';
+  rec=null;
+  showCard();
+  assert(!resumeScope,'card without cloud resume restores the default Lampa button order');
   win.LampaSyncPro.destroy();
   return {passed:passed};
 }
