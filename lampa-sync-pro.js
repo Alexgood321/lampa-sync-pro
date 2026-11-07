@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.5-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.6-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.5';
+  var VERSION = '0.1.6';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -24,7 +24,7 @@
   var lastSuccessfulSync = 0;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
-  var resumeOverrides = {};
+  var resumeOverrides = {}, stateListeners = [];
   // Supabase Realtime Phoenix 1.0.0; only the per-user revision head is replicated.
   var rtSocket=null, rtAccount='', rtTopic='', rtJoinRef='', rtRef=0;
   var rtJoined=false, rtStarting=false, rtState='disconnected', rtAttempt=0;
@@ -592,6 +592,7 @@
     state.revision = Math.max(0,Math.floor(number(snapshot.revision)));
     save();
     if (currentFull) updateFull(currentFull);
+    notifyState();
   }
   function rebaseRemainder(startAt,revision,acknowledged,ignored) {
     // Do NOT rebase events from a different media/session or after a stale write:
@@ -907,6 +908,48 @@
       socket.onclose=function(){realtimeDrop(socket);};
     });
   }
+  function notifyState() {
+    stateListeners.slice().forEach(function(listener) {
+      try{listener(state.revision);}catch(ignore){}
+    });
+  }
+  function onStateChange(listener) {
+    if(typeof listener!=='function')return function(){};
+    stateListeners.push(listener);
+    return function(){stateListeners=stateListeners.filter(function(x){return x!==listener;});};
+  }
+  function getEpisodeState(card,episode) {
+    var key=typeof card==='string'?card:mediaKey(card);
+    var ep=str(episode);
+    if(!key || !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep))return null;
+    for(var i=state.outbox.length-1;i>=0;i--){
+      var e=state.outbox[i];
+      if(e.media_key!==key || e.episode_key!==ep)continue;
+      if(e.kind==='marked_complete'||e.kind==='completed')return {state:'completed',pending:true};
+      if(e.kind==='marked_unwatched'||e.kind==='deleted')return {state:'reset',pending:true};
+      if(e.kind==='started'||e.kind==='progress')return {state:'in_progress',pending:true};
+    }
+    var rows=state.snapshot && state.snapshot.watch_state || [];
+    for(var j=0;j<rows.length;j++){
+      var row=rows[j];
+      if(row.media_key===key && row.episode_key===ep)
+        return {state:row.deleted?'reset':row.state,revision:row.updated_revision};
+    }
+    return null;
+  }
+  function markEpisode(card,episode,watched) {
+    if(!loaded || !state.auth || !state.deviceId)return false;
+    var key=typeof card==='string'?card:mediaKey(card),ep=str(episode);
+    if(!/^(tmdb:(tv|movie):\d{1,12}|imdb:tt\d{1,12}|kinopoisk:\d{1,12})$/.test(key) ||
+      !/^(movie|s\d{1,3}:e\d{1,4})$/.test(ep))return false;
+    var event={schema:1,event_id:uuid(),device_id:state.deviceId,
+      device_seq:++state.seq,base_revision:state.revision,
+      kind:watched?'marked_complete':'marked_unwatched',
+      media_key:key,episode_key:ep};
+    if(!event.event_id)return false;
+    state.outbox.push(event);save();notifyState();scheduleSync();
+    return true;
+  }
   function findCachedResume(key) {
     if (Object.prototype.hasOwnProperty.call(resumeOverrides,key)) return resumeOverrides[key];
     var snapshot = state.snapshot || {};
@@ -1207,6 +1250,7 @@
         s.listener.remove(s.kind,s.handler);
     });
     subscriptions=[];
+    stateListeners=[];
     if (win.removeEventListener) {
       win.removeEventListener('online',onOnline);
       win.removeEventListener('offline',onOffline);
@@ -1224,7 +1268,9 @@
     win.plugin_lampa_sync_pro_destroy=null;
   }
   win.plugin_lampa_sync_pro_destroy=destroy;
-  win.LampaSyncPro={status:status,sync:function(){sync(true);},destroy:destroy};
+  win.LampaSyncPro={status:status,sync:function(){sync(true);},destroy:destroy,
+    getResume:function(card){return findCachedResume(typeof card==='string'?card:mediaKey(card));},
+    getEpisodeState:getEpisodeState,markEpisode:markEpisode,onChange:onStateChange};
   if (win.appready) boot();
   else subscribe(L.Listener,'app',function(e){if(e && e.type==='ready')boot();});
 })(typeof window==='undefined' ? null : window);
