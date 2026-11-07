@@ -97,6 +97,10 @@ function runAutoEpisodeCompleteSmoke(source){
     'previous completion is ordered before new started event');
   ok(a.win.LampaSyncPro.getEpisodeState(card,'s1:e3').state==='completed',
     'NUM sees the cloud completion immediately');
+  ok(a.events()[1].completion_basis==='inferred',
+    'automatic completion explicitly records inferred provenance');
+  ok(a.win.LampaSyncPro.getEpisodeState(card,'s1:e3').basis==='inferred',
+    'inferred status is available to NUM for outlined green state');
   ok(a.events()[1].source_recipe===undefined &&
     a.events()[1].position_seconds===undefined,
     'manual event never invents a timecode or contains stream data');
@@ -108,6 +112,15 @@ function runAutoEpisodeCompleteSmoke(source){
     'normal cloud transactional queue carries inferred completion');
   a.dispose();
 
+  var manual=rig();
+  ok(manual.win.LampaSyncPro.markEpisode(card,'s1:e5',true),
+    'manual mark is allowed without tracking');
+  ok(manual.events().some(function(e){return e.kind==='marked_complete' &&
+    e.episode_key==='s1:e5' && e.completion_basis==='manual';}),
+    'manual completion cannot be confused with heuristic completion');
+  ok(manual.win.LampaSyncPro.getEpisodeState(card,'s1:e5').basis==='manual',
+    'manual status is exposed to NUM');
+  manual.dispose();
   var b=rig();b.launch(3);b.close();b.launch(5);
   ok(b.marks(3).length===0,'skipping an episode does not mark it');b.dispose();
   var c=rig();c.launch(3);c.close();c.launch(4,other);
