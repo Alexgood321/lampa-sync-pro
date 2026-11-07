@@ -81,7 +81,10 @@ function runResumeSmoke(source) {
         append:function(row){this.items.push(row);return this;}};
     }
     if(String(html).indexOf('view--lsp-resume')!==-1){
-      var obj={html:html,attrs:{},value:'',
+      var obj={html:html,attrs:{},value:'',classes:{},
+        addClass:function(name){this.classes[name]=true;return this;},
+        removeClass:function(name){delete this.classes[name];return this;},
+        hasClass:function(name){return !!this.classes[name];},
         find:function(sel){
           if(sel==='span')return {text:function(t){obj.value=t;return this;}};
           if(sel==='.lsp-resume-episode')return {text:function(t){obj.episode=t;return this;}};
@@ -116,7 +119,7 @@ function runResumeSmoke(source) {
       Select:{show:function(params){selectedUI=params;}},
       Controller:{enabled:function(){return {name:'modal'};},
         collectionFocus:function(item,viewport){nativeFocused.push(item);}},
-      Modal:{scroll:function(){return {
+      Modal:{listener:emitter(),scroll:function(){return {
         render:function(){return {0:{contains:function(){return true;}}};},
         update:function(item){scrollTargets.push(item);}
       };}},
@@ -161,6 +164,11 @@ function runResumeSmoke(source) {
   var movie={id:7000,source:'tmdb',media_type:'tv',name:'Mock TV',first_air_date:'2000-01-01'};
   function showCard(){
     app.emit('full',{type:'complite',data:{movie:movie},body:root});
+  }
+  function nativeListShown(){
+    win.Lampa.Modal.listener.emit('update',{
+      new_html:{hasClass:function(name){return name==='torrent-files';}}
+    });
   }
   showCard();
   assert(!!button,'cloud resume button appears directly on the card toolbar');
@@ -215,8 +223,19 @@ function runResumeSmoke(source) {
   assert(!sourceButton.html.includes('lsp-resume-episode') &&
     sourceButton.value.includes('С2E5'),
     'source menu uses only the full label, without duplicate episode badge');
+  assert(button.html.includes('class="lsp-resume-spinner"') &&
+    button.html.includes('class="lsp-resume-glyph"') &&
+    styleNodes[0].textContent.includes('@keyframes lsp-resume-spin'),
+    'spinner replaces SVG while keeping the episode label and icon dimensions');
   button['hover:enter']();
-  assert(openedTorrents.length===1,'Continue opens native torrent file cards');
+  assert(button.hasClass('lsp-resume-loading') &&
+    sourceButton.hasClass('lsp-resume-loading') &&
+    button.attrs['aria-busy']==='true' &&
+    button.episode==='S02E05',
+    'loading immediately appears on both button surfaces without hiding episode');
+  button['hover:enter']();
+  assert(openedTorrents.length===1,
+    'Continue opens torrent cards once; repeated clicks while pending are ignored');
   assert(played===null,'Continue never autoplays the saved episode');
   assert(openedTorrents[0].hash===rec.source_recipe.infohash,
     'same saved torrent infohash is used');
@@ -227,6 +246,9 @@ function runResumeSmoke(source) {
   flushTimer(80);
   assert(nativeFocused[0]===savedItem && scrollTargets[0]===savedItem,
     'native file list focuses and scrolls to the saved episode');
+  assert(!button.hasClass('lsp-resume-loading') &&
+    button.attrs['aria-busy']==='false',
+    'native picker readiness stops spinner on the actual successful focus');
   assert(savedNativeRoad.time===1120 && savedNativeRoad.duration===2700,
     'cloud checkpoint is added only to chosen player item, not global Timeline');
   assert(played===null,'focusing a series row does not launch playback');
@@ -245,6 +267,11 @@ function runResumeSmoke(source) {
   assert(!timers.some(function(t){return t.active&&t.ms===80;}),
     'next episode does not override saved-episode selection');
   assert(sourceEntries.length===1,'source menu has no duplicates');
+  assert(sourceButton.hasClass('lsp-resume-loading'),
+    'native picker loading stays visible until file list is actually drawn');
+  nativeListShown();
+  assert(!sourceButton.hasClass('lsp-resume-loading'),
+    'native modal update releases pending loading state');
   rec.watched_state='completed';
   showCard();
   assert(!!button && !!sourceButton,'both buttons remain after completed episode');
@@ -261,12 +288,15 @@ function runResumeSmoke(source) {
     item:{0:{offsetParent:{}}},params:{movie:movie}});
   assert(completedNativeRoad.time===0,
     'replaying the completed saved file starts at zero rather than end credits');
+  nativeListShown();
   // Android external torrent mode uses native Lampa Select, because
   // Torrent.open would directly run Android.playHash without file selection.
   androidMode=true;internalTorrent=false;
   sourceButton['hover:enter']();
   assert(!!selectedUI && selectedUI.items.length===2,
     'Android external mode offers a file picker instead of playing a hash');
+  assert(!button.hasClass('lsp-resume-loading'),
+    'native Select dialog stops loading immediately after rendering');
   assert(selectedUI.items[0].selected && !selectedUI.items[1].selected,
     'saved episode is initially highlighted in fallback picker');
   assert(played===null,'fallback picker does not autoplay');
@@ -343,6 +373,8 @@ function runResumeSmoke(source) {
     'fast Continue reuses first TorrServer metadata and skips slow native open');
   assert(fastOpened.length===1 && fastUpdates.length===1,
     'fast native-styled file window is visible on the first response');
+  assert(!button.hasClass('lsp-resume-loading'),
+    'fast picker stops loading only after Modal.update succeeded');
   assert(seasonRequests===1 && seasonNumbers.length===1 && seasonNumbers[0]===2,
     'season metadata requested asynchronously once after initial file window');
   assert(fastRows[0].titleNode.value==='' && 
@@ -474,6 +506,21 @@ function runResumeSmoke(source) {
   assert(fastFilesRequests===requestsBeforeCache+2,
     'new TorrServer cached response is reused without a second request');
   fastOpened[fastOpened.length-1].onBack();
+  // A hung TorrServer response must release the UI and allow a new click.
+  win.Lampa.Torserver.url=function(){return 'http://hung-server:8090';};
+  var normalFiles=win.Lampa.Torserver.files;
+  win.Lampa.Torserver.files=function(){};
+  showCard();
+  var stalledButton=button;
+  stalledButton['hover:enter']();
+  assert(stalledButton.hasClass('lsp-resume-loading'),
+    'hung torrent metadata request keeps the busy button visible');
+  flushTimer(25000);
+  assert(!stalledButton.hasClass('lsp-resume-loading') &&
+    stalledButton.attrs['aria-busy']==='false',
+    '25-second timeout restores button and cancels active resume job');
+  win.Lampa.Torserver.files=normalFiles;
+  win.Lampa.Torserver.url=function(){return 'http://server-two:8090';};
   // Native Lampac online resume remains part of our own Sync Pro button.
   rec={episode_key:'s2:e5',source_key:'lampac:kodik:88',source_kind:'lampac',
     source_recipe:{balanser:'kodik',voice_id:'88',voice_name:'Studio',
@@ -485,6 +532,8 @@ function runResumeSmoke(source) {
   button['hover:enter']();
   assert(openedOnline===1,'native online action opens');
   assert(selectedOnline[0]===5,'matching online episode auto-selected');
+  assert(!button.hasClass('lsp-resume-loading'),
+    'Lampac spinner stops when the selected episode launches');
   onlineMode=false;
   sourceButton['hover:enter']();
   assert(selectedOnline[1]===5,'source picker Lampac resume opens matching episode');
