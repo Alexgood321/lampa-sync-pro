@@ -1123,16 +1123,18 @@
       else resumeOnline(card,rec,e);
     }
     function createResumeButton(className) {
+      var showEpisode=className==='view--lsp-resume';
       var button=win.$('<div class="full-start__button selector '+className+'" role="button">'+
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '+
         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
         '<path d="M4.6 9A8 8 0 1 1 4 12"/>'+
         '<path d="M4 4v5h5"/>'+
         '<path d="m10 8.5 5.5 3.5L10 15.5z" fill="currentColor" stroke="none"/>'+
-        '</svg><strong class="lsp-resume-episode" '+
-        'style="font-size:.8em;font-weight:600;white-space:nowrap;margin-left:.4em"></strong>'+
+        '</svg>'+(showEpisode ?
+        '<strong class="lsp-resume-episode" '+
+        'style="font-size:.8em;font-weight:600;white-space:nowrap;margin-left:.4em"></strong>' : '')+
         '<span></span></div>');
-      button.find('.lsp-resume-episode').text(resumeEpisodeShort(rec));
+      if(showEpisode)button.find('.lsp-resume-episode').text(resumeEpisodeShort(rec));
       button.find('span').text(caption);
       button.attr('title',caption).attr('aria-label',caption);
       button.on('hover:enter',resumeAction);
