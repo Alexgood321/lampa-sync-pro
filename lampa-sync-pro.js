@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.14-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.15-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.14';
+  var VERSION = '0.1.15';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -25,6 +25,7 @@
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
   var torrentResumeJob = null, torrentFocusJob = null;
+  var resumeFilesCache=null, resumePrefetchJob=null;
   var resumeOverrides = {}, stateListeners = [], onlineResumeTimer=null;
   // Supabase Realtime Phoenix 1.0.0; only the per-user revision head is replicated.
   var rtSocket=null, rtAccount='', rtTopic='', rtJoinRef='', rtRef=0;
@@ -237,6 +238,8 @@
     realtimeStop();
     stopOnlineResume();
     cancelTorrentResume();
+    abandonTorrentPrefetch();
+    resumeFilesCache=null;
     cancelTorrentFocus();
     clearTorrPoll();
     lastTorrent=null;
@@ -1164,6 +1167,7 @@
     if(bars && typeof bars.removeClass==='function')bars.removeClass('lsp-has-resume');
     var rec=findCachedResume(key);
     if (!rec || (rec.source_kind!=='torrent' && rec.source_kind!=='lampac')) return;
+    if(rec.source_kind==='torrent')prefetchTorrentResume(rec);
     var caption=labelResume(rec);
     function resumeAction() {
       if (rec.source_kind==='torrent') resumeTorrent(card,rec);
@@ -1433,6 +1437,71 @@
   // its first Torserver.files() call only after a 2000ms interval, even when
   // we already fetched file_stats. Reuse the validated response and emit
   // the same torrent_file + modal update events that NUM Series Pro expects.
+  // Cache only one currently visible card's metadata, in RAM, never disk.
+  // Lampa Torserver.files is the costly first network roundtrip; prefetch
+  // starts on a card with an actual authenticated cloud resume record.
+  function torrentCacheKey(hash) {
+    if(!state.userId || !L.Torserver || typeof L.Torserver.url!=='function')return '';
+    var url='';
+    try{url=str(L.Torserver.url());}catch(ignore){}
+    return url ? state.userId+'|'+url+'|'+str(hash).toUpperCase() : '';
+  }
+  function cachedTorrentResponse(hash) {
+    var key=torrentCacheKey(hash), entry=resumeFilesCache;
+    if(!key || !entry || entry.key!==key || Date.now()-entry.at>90000)return null;
+    return entry.response;
+  }
+  function abandonTorrentPrefetch() {
+    var job=resumePrefetchJob;
+    if(!job)return;
+    resumePrefetchJob=null;
+    job.cancelled=true;
+    if(job.timer)clearTimeout(job.timer);
+    // Callback waiters belong to the active user click; do not silently drop.
+    if(job.waiters && job.waiters.length)job.waiters.forEach(function(cb){
+      try{cb(new Error('prefetch_cancelled'));}catch(ignore){}
+    });
+  }
+  function prefetchTorrentResume(rec) {
+    if(STOPPED || !rec || rec.source_kind!=='torrent' ||
+      !L.Torserver || typeof L.Torserver.files!=='function')return;
+    var hash=str(rec.source_recipe && rec.source_recipe.infohash).toUpperCase();
+    if(!/^([0-9A-F]{40}|[A-Z2-7]{32})$/.test(hash))return;
+    var key=torrentCacheKey(hash);
+    if(!key || cachedTorrentResponse(hash))return;
+    if(resumePrefetchJob && resumePrefetchJob.key===key)return;
+    if(resumePrefetchJob)abandonTorrentPrefetch();
+    var job={key:key,hash:hash,started:false,cancelled:false,timer:null,waiters:[]};
+    resumePrefetchJob=job;
+    function start() {
+      if(STOPPED || job.cancelled || resumePrefetchJob!==job)return;
+      job.timer=null;job.started=true;
+      torFiles(hash,function(err,response) {
+        if(job.cancelled || STOPPED || resumePrefetchJob!==job)return;
+        resumePrefetchJob=null;
+        var rows=response && (response.file_stats || response.files);
+        if(!err && Array.isArray(rows) && rows.length && torrentCacheKey(hash)===key)
+          resumeFilesCache={key:key,at:Date.now(),response:response};
+        job.waiters.forEach(function(cb){try{cb(err,response);}catch(ignore){}});
+      });
+    }
+    job.start=start;
+    job.timer=setTimeout(start,180);
+  }
+  function readCachedTorrentFiles(hash,callback) {
+    var response=cachedTorrentResponse(hash);
+    if(response)return callback(null,response);
+    var key=torrentCacheKey(hash),job=resumePrefetchJob;
+    if(key && job && !job.cancelled && job.key===key) {
+      job.waiters.push(callback);
+      if(!job.started && typeof job.start==='function') {
+        if(job.timer)clearTimeout(job.timer);
+        job.start();
+      }
+      return;
+    }
+    torFiles(hash,callback);
+  }
   function openFastTorrentFiles(card,rec,hash,files) {
     if (!files || files.length<2 ||
       !L.Modal || typeof L.Modal.open!=='function' ||
@@ -1454,6 +1523,7 @@
       return normalized(a).localeCompare(normalized(b));
     });
     var params={movie:card,files:entries},playlist=[],rows=[],modalOpened=false;
+    var enrichmentClosed=false;
     var recipe=rec.source_recipe || {},checkpoint=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
     var desiredIndex=Number(recipe.file_index),desiredPath=normalPath(recipe.file_path);
     var watched=rec.watched_state==='completed';
@@ -1537,6 +1607,7 @@
       var empty=win.$('<div class="torrent-files"></div>');
       L.Modal.open({title:'Файлы торрента',html:empty,size:'large',mask:true,
         onBack:function(){
+          enrichmentClosed=true;
           L.Modal.close();
           L.Listener.send('torrent_file',{type:'list_close'});
         }});
@@ -1547,6 +1618,7 @@
         el.playlist=playlist;
         playlist.push(el);
         row.on('hover:enter',function(){
+          enrichmentClosed=true;
           staged={file:el,card:card,at:Date.now()};
           try {
             if(L.Favorite && typeof L.Favorite.add==='function' && card.id)
@@ -1597,6 +1669,76 @@
           items:entries,params:params});
       });
       L.Modal.update(contents);
+      // Stock Lampa calls Api.seasons() before building the list, which blocks
+      // its first paint on network/cache. We render immediately and hydrate
+      // episode stills, proper titles and air dates after the API responds.
+      if(L.Api && typeof L.Api.seasons==='function') {
+        var seasons=[];
+        rows.forEach(function(x){
+          var season=Math.floor(number(x.file.season));
+          if(x.file.episode>0 && season>=0 && seasons.indexOf(season)<0)
+            seasons.push(season);
+        });
+        if(seasons.length && card && card.id) {
+          try{
+            L.Api.seasons(card,seasons,function(metadata){
+              if(enrichmentClosed || STOPPED || !metadata)return;
+              if(L.Modal && typeof L.Modal.opened==='function' &&
+                L.Modal.opened()===false)return;
+              rows.forEach(function(x) {
+                var file=x.file,season=metadata[file.season],
+                  episode=season && Array.isArray(season.episodes) ?
+                    season.episodes.filter(function(ep){
+                      return Number(ep.episode_number)===Number(file.episode);
+                    })[0] : null;
+                if(!episode)return;
+                if(episode.name) {
+                  file.title=file.episode+' / '+episode.name;
+                  file.fname=episode.name;
+                  var title=x.item.find('.torrent-serial__title');
+                  if(title && typeof title.text==='function')title.text(episode.name);
+                }
+                if(episode.air_date) {
+                  var air=episode.air_date;
+                  try{
+                    if(L.Utils && typeof L.Utils.parseTime==='function')
+                      air=L.Utils.parseTime(episode.air_date).full || air;
+                  }catch(ignore){}
+                  file.air_date=air;
+                  var date=x.item.find('.torrent-serial__line span').last();
+                  // Stock Lampa uses "Сезон - N | Выход - DD.MM.YYYY".
+                  if(date && typeof date.text==='function')
+                    date.text('Выход - '+air);
+                }
+                if(number(episode.runtime)>0 && file.timeline &&
+                  !number(file.timeline.duration)) {
+                  file.timeline.duration=number(episode.runtime)*60;
+                  if(file.timeline.time>0)file.timeline.percent=Math.min(100,
+                    Math.round(file.timeline.time/file.timeline.duration*100));
+                }
+                var still=episode.still_path || episode.img;
+                if(still) {
+                  var imageUrl=still;
+                  if(episode.still_path && L.Api && typeof L.Api.img==='function')
+                    imageUrl=L.Api.img(episode.still_path);
+                  if(typeof imageUrl==='string' && imageUrl.length && 
+                    !/^(javascript|data):/i.test(imageUrl)) {
+                    file.img=imageUrl;
+                    file.thumbnail=imageUrl;
+                    var img=x.item.find('img');
+                    if(img && img.length && typeof img.attr==='function'){
+                      img.attr('data-src',imageUrl);
+                      // If the lazy-visible event already fired, replace the
+                      // placeholder immediately, with no extra scroll needed.
+                      img.attr('src',imageUrl);
+                    }
+                  }
+                }
+              });
+            });
+          }catch(ignore){}
+        }
+      }
       // After NUM synchronously injects season tabs, focus the saved episode.
       if(saved && L.Modal.scroll && L.Modal.scroll()) {
         try{
@@ -1610,6 +1752,7 @@
       // Never leave a blank fast picker on an exceptional WebView: close our
       // own modal before falling back to the original Lampa selector.
       if(modalOpened){
+        enrichmentClosed=true;
         try{L.Modal.close();}catch(ignore){}
         try{L.Listener.send('torrent_file',{type:'list_close'});}catch(ignore){}
       }
@@ -1666,7 +1809,7 @@
     // Two reads of an already cached torrent before attempting hash-only add.
     function readFiles(afterAdd,attempt) {
       if (!alive()) return;
-      torFiles(hash,function(err,response){
+      readCachedTorrentFiles(hash,function(err,response){
         if (!alive()) return; // Ignore late callbacks after a new request/logout.
         var items=response && (response.file_stats || response.files);
         if (!err && Array.isArray(items) && items.length) {
@@ -1895,6 +2038,8 @@
     realtimeStop();
     stopOnlineResume();
     cancelTorrentResume();
+    abandonTorrentPrefetch();
+    resumeFilesCache=null;
     cancelTorrentFocus();
     clearTorrPoll();
     if (sendTimer) clearTimeout(sendTimer);
