@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.20-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.21-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.20';
+  var VERSION = '0.1.21';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -33,6 +33,7 @@
   var rtSubscriptions=[], rtHeartbeat=null, rtPingRef='', rtPingAt=0;
   var rtJoinTimeout=null, rtReconnect=null, rtAuthTimer=null, rtPullTimer=null;
   var rtPendingRevision=0, rtLastEventAt=0, rtJoinCatchup=false;
+  var deviceRegistrationAt = 0;
   var state = { schema: 1, userId: '', auth: null, deviceId: '', seq: 0,
     revision: 0, snapshot: null, outbox: [], lastTorrent: null, lastPlayback: null };
 
@@ -175,6 +176,7 @@
       state.snapshot = null;
       state.seq = 0;
       state.deviceId = uuid();
+      deviceRegistrationAt=0;
       state.lastTorrent=null;
       state.lastPlayback=null;
       lastTorrent=null;
@@ -215,9 +217,90 @@
       });
     });
   }
+  function detectedPlatform() {
+    var nav=win.navigator || {}, ua=str(nav.userAgent);
+    if (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && number(nav.maxTouchPoints)>1))
+      return 'ipad';
+    if (/iPhone|iPod/i.test(ua)) return 'iphone';
+    var androidApp=false, tv=false;
+    try {
+      androidApp=!!(L.Platform && L.Platform.is && L.Platform.is('android'));
+      tv=!!(L.Platform && L.Platform.is && L.Platform.is('tv'));
+    } catch(ignore) {}
+    if (/Android/i.test(ua) || androidApp) {
+      if (/Android TV|Google TV|AFT[A-Z0-9]|BRAVIA|SHIELD Android TV|MiTV|TVOS/i.test(ua) || tv)
+        return 'android_tv';
+      return 'android';
+    }
+    if (/Macintosh|Mac OS X/i.test(ua)) return 'mac';
+    if (/Windows/i.test(ua)) return 'windows';
+    if (/Linux/i.test(ua)) return 'linux';
+    return 'unknown';
+  }
+  function devicePlayer() {
+    var value='';
+    try {value=str(L.Storage.get('lsp_device_player','unknown')).toLowerCase();}
+    catch(ignore) {}
+    return /^(vimu|vlc|iina|native)$/.test(value) ? value : 'unknown';
+  }
+  function platformLabel(platform) {
+    var names={iphone:'iPhone',ipad:'iPad',mac:'Mac',android_tv:'Android TV',
+      android:'Android',windows:'Windows',linux:'Linux',unknown:'Не определено'};
+    return names[platform] || names.unknown;
+  }
+  // Identification never changes the playback event schema or CUB history.
+  // Only the device itself can automatically report its platform; old IDs remain unknown.
+  function registerDevice(force) {
+    if (!loaded || STOPPED || !state.auth || !validUUID(state.deviceId)) return;
+    if (!force && Date.now()-deviceRegistrationAt<6*3600000) return;
+    deviceRegistrationAt=Date.now();
+    var owner=state.userId;
+    rpc('lsp_register_device',{p_device_id:state.deviceId,
+      p_platform:detectedPlatform(),p_player:devicePlayer()},function(err) {
+      if (owner!==state.userId)return;
+      if (err) {
+        deviceRegistrationAt=0;
+        if(force)note('Регистрация устройства недоступна: '+str(err.code||err.message).slice(0,40));
+      } else if(force)note('Устройство зарегистрировано: '+platformLabel(detectedPlatform()));
+    });
+  }
+  function renameDevice(deviceId,current) {
+    if (!state.auth)return note('Сначала войдите в Sync Pro');
+    if (!validUUID(deviceId))return note('Некорректный ID устройства');
+    if (!L.Input || !L.Input.edit)return note('Ввод имени недоступен');
+    L.Input.edit({value:current || '',title:'Название устройства (до 60 символов)',
+      free:true,nosave:true},function(value) {
+      var v=str(value);
+      if(v.length>60)return note('Название слишком длинное');
+      rpc('lsp_rename_device',{p_device_id:deviceId,p_name:v},function(err) {
+        if(err)return note('Не удалось назвать устройство');
+        note(v ? 'Устройство названо: '+v : 'Имя устройства очищено');
+      });
+    });
+  }
+  function showDevices() {
+    if(!state.auth)return note('Сначала войдите в Sync Pro');
+    if(!L.Select || !L.Select.show)return note('Список устройств недоступен');
+    token(function(err,jwt) {
+      if(err)return note('Нет доступа к устройствам');
+      request('GET','/rest/v1/lsp_devices?select=device_id,platform,device_name,player,last_seen,first_seen&order=last_seen.desc',
+        undefined,jwt,function(error,rows) {
+          if(error || !Array.isArray(rows))return note('Список устройств не загружен');
+          L.Select.show({title:'Устройства Lampa Sync Pro',items:rows.map(function(row) {
+            var isMe=row.device_id===state.deviceId;
+            var label=row.device_name || platformLabel(row.platform);
+            return {title:(isMe?'● ':'')+label+' #'+str(row.device_id).slice(0,8)+
+              ' · '+str(row.player||'unknown')+
+              (row.platform==='unknown'?' · не определено':''),
+              device_id:row.device_id,device_name:row.device_name||''};
+          }),onSelect:function(item){renameDevice(item.device_id,item.device_name);}});
+        });
+    });
+  }
   function selectAccount(data) {
     if (!storeAuth(data)) { note('Ошибка данных авторизации'); return; }
     retryAfter = 0;
+    registerDevice();
     realtimeStart();
     sync(true);
   }
@@ -266,6 +349,7 @@
     state.revision = 0;
     state.seq = 0;
     state.deviceId = uuid();
+    deviceRegistrationAt = 0;
     save();
     currentFull = null;
     if (oldJwt) request('POST','/auth/v1/logout',{},oldJwt,function () {});
@@ -2132,6 +2216,7 @@
       email:state.auth && state.auth.email || '',revision:state.revision,
       queued:state.outbox.length,device:state.deviceId,storage:storageMode,
       capture:option('capture',true),autoNextComplete:option('auto_next_complete',true),
+      platform:detectedPlatform(),player:devicePlayer(),
       busy:networkBusy,torrserver:torrStatus,
       realtime:rtState,lastRealtimeAt:rtLastEventAt,lastSyncAt:lastSuccessfulSync};
   }
@@ -2179,6 +2264,28 @@
       note(s.authenticated ? ('Подключён: ' + s.email + ', очередь: ' + s.queued +
         ', ревизия: ' + s.revision + ', Realtime: ' + s.realtime) : 'Аккаунт не подключён');
     });
+    button('lsp_device_info','Это устройство','Показать платформу, ID и выбранный плеер',function(){
+      note(platformLabel(detectedPlatform())+' #'+state.deviceId.slice(0,8)+
+        ', плеер: '+devicePlayer());
+    });
+    button('lsp_device_name','Название этого устройства',
+      'Указать название, которое появится в списке устройств',function(){
+        renameDevice(state.deviceId,'');
+    });
+    button('lsp_devices','Все устройства','Посмотреть ID, платформу и задать имена',
+      showDevices);
+    button('lsp_device_player','Плеер этого устройства',
+      'Указывать вручную: определение плеера автоматически ненадёжно',function(){
+        if(!L.Select || !L.Select.show)return note('Выбор плеера недоступен');
+        L.Select.show({title:'Плеер (выбирается вручную)',
+          items:[{title:'Не определён',player:'unknown'},{title:'Vimu',player:'vimu'},
+            {title:'VLC',player:'vlc'},{title:'IINA',player:'iina'},
+            {title:'Встроенный Lampa',player:'native'}],
+          onSelect:function(item){
+            L.Storage.set('lsp_device_player',item.player);
+            registerDevice(true);
+          }});
+      });
     button('lsp_login','Войти','Email и пароль Supabase Auth',function(){login(false);});
     button('lsp_register','Зарегистрироваться','При включённой проверке email придёт письмо',function(){login(true);});
     button('lsp_sync_now','Синхронизировать сейчас','Загрузить изменения и отправить очередь',function(){sync(true);});
@@ -2229,7 +2336,7 @@
         ready: true, version: VERSION, channel: CHANNEL, started_at: Date.now()
       };
       subscribe(L.Listener,'full',visibleCard);
-      if (state.auth) { sync(false); realtimeStart(); }
+      if (state.auth) { registerDevice(); sync(false); realtimeStart(); }
       if (win.addEventListener) {
         win.addEventListener('online',onOnline);
         win.addEventListener('offline',onOffline);
@@ -2251,6 +2358,7 @@
   function onForeground(){
     if (STOPPED || !loaded || !state.auth) return;
     if (win.document && win.document.visibilityState==='hidden') return;
+    registerDevice();
     realtimeStart();
     if (Date.now()-lastSuccessfulSync<20000) return;
     sync(false);
