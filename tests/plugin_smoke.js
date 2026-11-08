@@ -131,6 +131,30 @@ function runPluginTests(source) {
   settings.lsp_device_player.onChange();
   check(deviceMenu.items.some(function(item){return item.player==='vimu';}),
     'optional player labeling requires a user choice');
+  prompts.push('Мой телевизор');
+  settings.lsp_devices.onChange();
+  deviceMenu.onSelect(deviceMenu.items[1]);
+  check(renameRequests.length===1 &&
+    renameRequests[0].p_device_id==='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' &&
+    renameRequests[0].p_name==='Мой телевизор',
+    'an old unidentified device can be manually named without guessing its platform');
+  fakeWindow.navigator.userAgent='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)';
+  check(fakeWindow.LampaSyncPro.status().platform==='iphone','iPhone is detected by user agent');
+  fakeWindow.navigator.userAgent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)';
+  fakeWindow.navigator.maxTouchPoints=5;
+  check(fakeWindow.LampaSyncPro.status().platform==='ipad',
+    'desktop user agent of iPadOS is detected using touch capability');
+  fakeWindow.navigator.userAgent='Mozilla/5.0 (Linux; Android 12; Android TV) AppleWebKit/537.36';
+  fakeWindow.navigator.maxTouchPoints=0;
+  check(fakeWindow.LampaSyncPro.status().platform==='android_tv',
+    'Android TV is detected without confusing it with Android phones');
+  settings.lsp_device_player.onChange();
+  var vimu=deviceMenu.items.filter(function(i){return i.player==='vimu';})[0];
+  deviceMenu.onSelect(vimu);
+  check(registeredDevices[registeredDevices.length-1].p_platform==='android_tv' &&
+    registeredDevices[registeredDevices.length-1].p_player==='vimu',
+    'user-confirmed Vimu label registers with Android TV platform');
+  fakeWindow.navigator.userAgent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)';
   check(requests.some(function(r){return r.url.indexOf('/rest/v1/rpc/lsp_sync_snapshot')!==-1;}),
     'bootstrap snapshot');
   var card={source:'tmdb',id:1000,media_type:'tv',name:'Synthetic series',first_air_date:'2000-01-01'};
