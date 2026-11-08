@@ -16,6 +16,7 @@ function runPluginTests(source) {
   }
   var listener=emitter(),playerListener=emitter(),videoListener=emitter(),timelineListener=emitter();
   var settings={}, stored={}, notices=[], requests=[], serverEvents=[], serverRevision=0;
+  var registeredDevices=[], renameRequests=[], deviceMenu=null;
   var randomSeq=0, isOnline=true, prompts=['test@example.org','test-secret-password'];
   var local={};
   var installed=[{url:'https://raw.githubusercontent.com/Alexgood321/lampa-sync-pro/main/lampa-sync-pro.js',
@@ -23,6 +24,7 @@ function runPluginTests(source) {
   var savedPluginMetadata=0;
   var fakeWindow={
     appready:true,
+    navigator:{userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',maxTouchPoints:0},
     crypto:{getRandomValues:function(a){randomSeq++;for(var i=0;i<a.length;i++)a[i]=(i*31+randomSeq*17)&255;return a;}},
     localStorage:{
       getItem:function(k){return Object.prototype.hasOwnProperty.call(local,k)?local[k]:null;},
@@ -43,6 +45,7 @@ function runPluginTests(source) {
         set:function(k,v){stored[k]=v;}
       },
       Noty:{show:function(t){notices.push(String(t));}},
+      Select:{show:function(menu){deviceMenu=menu;}},
       SettingsApi:{
         addComponent:function(){},
         addParam:function(p){settings[p.param.name]=p;}
@@ -77,6 +80,15 @@ function runPluginTests(source) {
         response={status:'ok',revision:serverRevision,accepted:accepted,
           ignored:0,duplicates:duplicates};
       }
+    }else if(this.url.indexOf('/rest/v1/rpc/lsp_register_device')!==-1){
+      registeredDevices.push(content);response={status:'ok',platform:content.p_platform};
+    }else if(this.url.indexOf('/rest/v1/rpc/lsp_rename_device')!==-1){
+      renameRequests.push(content);response={status:'ok'};
+    }else if(this.url.indexOf('/rest/v1/lsp_devices?')!==-1){
+      response=[{device_id:fakeWindow.LampaSyncPro.status().device,platform:'mac',
+        device_name:'',player:'unknown',last_seen:'2026-11-08T14:00:00Z'},
+        {device_id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',platform:'unknown',
+          device_name:'',player:'unknown',last_seen:'2026-11-07T12:00:00Z'}];
     }else if(this.url.indexOf('/rest/v1/rpc/lsp_get_resume')!==-1){
       response=null;
     }else{
@@ -107,6 +119,18 @@ function runPluginTests(source) {
   check(fakeWindow.LampaSyncPro.status().authenticated===true,'auth sign in');
   check(requests.some(function(r){return r.url.indexOf('/auth/v1/token?grant_type=password')!==-1;}),
     'password-grant REST request');
+  check(registeredDevices.length===1 && registeredDevices[0].p_platform==='mac' &&
+    registeredDevices[0].p_device_id===fakeWindow.LampaSyncPro.status().device,
+    'authenticated Mac automatically registers stable device identity');
+  check(settings.lsp_devices && settings.lsp_device_name && settings.lsp_device_player,
+    'device directory, self-name and player settings available');
+  settings.lsp_devices.onChange();
+  check(deviceMenu && deviceMenu.items.length===2 &&
+    deviceMenu.items[1].title.includes('Не определено'),
+    'old unmapped devices remain explicitly unknown instead of being guessed');
+  settings.lsp_device_player.onChange();
+  check(deviceMenu.items.some(function(item){return item.player==='vimu';}),
+    'optional player labeling requires a user choice');
   check(requests.some(function(r){return r.url.indexOf('/rest/v1/rpc/lsp_sync_snapshot')!==-1;}),
     'bootstrap snapshot');
   var card={source:'tmdb',id:1000,media_type:'tv',name:'Synthetic series',first_air_date:'2000-01-01'};
