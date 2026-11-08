@@ -360,7 +360,10 @@ function runResumeSmoke(source) {
   win.Lampa.Modal.update=function(data){win.Lampa.Modal.listener.emit('update',{new_html:data});};
   win.Lampa.Modal.close=function(){fastModalClosed=true;};
   win.Lampa.Modal.opened=function(){return !fastModalClosed;};
-  win.Lampa.Favorite={add:function(){}};
+  var nativeHistory=[];
+  win.Lampa.Favorite={add:function(where,card,limit){
+    nativeHistory.push({where:where,card:Object.assign({},card),limit:limit});
+  }};
   win.Lampa.Player.callback=function(){};
   win.Lampa.Controller.toggle=function(){};
   var seasonCall=null,seasonRequests=0,seasonNumbers=[];
@@ -437,9 +440,28 @@ function runResumeSmoke(source) {
   fastRows[1].listeners['hover:enter']();
   assert(played && played.id===5 && played.timeline.time===0,
     'following episode can still be started manually');
+  assert(nativeHistory.length===1 && nativeHistory[0].where==='history' &&
+    nativeHistory[0].card.id===movie.id && nativeHistory[0].card.name==='Mock TV',
+    'fast picker records valid native Lampa/CUB history once on file selection');
   fastRows[0].listeners['hover:enter']();
   assert(played && played.id===4 && played.timeline.time===1120 &&
     playlist.length===2,'saved episode resumes with full playlist');
+  assert(nativeHistory.length===2 && nativeHistory[1].where==='history' &&
+    nativeHistory[1].limit===100,
+    'each actual selection uses native history and never a Supabase history write');
+  var previousName=movie.name, beforeMalformed=nativeHistory.length;
+  movie.name='unknown';
+  fastRows[0].listeners['hover:enter']();
+  assert(nativeHistory.length===beforeMalformed && played && played.id===4,
+    'placeholder card never pollutes CUB history, but playback still works');
+  movie.original_name='Original Series';
+  fastRows[0].listeners['hover:enter']();
+  assert(nativeHistory.length===beforeMalformed+1 &&
+    nativeHistory[nativeHistory.length-1].card.name==='Original Series' &&
+    movie.name==='unknown',
+    'verified original title repairs history metadata without changing the source card');
+  movie.name=previousName;
+  delete movie.original_name;
   assert(JSON.stringify(played).indexOf('S02E05.mkv')>=0,
     'external player can serialize selected episode and its playlist');
   win.Lampa.Player.play=originalFastPlay;
