@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.19-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.20-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.19';
+  var VERSION = '0.1.20';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1663,6 +1663,33 @@
     }
     torFiles(hash,callback);
   }
+  // This fast picker bypasses Lampa.Torrent.open(), including its native
+  // Favorite.add('history') hook. Keep CUB history in Lampa's own API only;
+  // never mirror it into Supabase or write placeholder cards.
+  function recordNativeHistory(card) {
+    if (!card || !/^\d{1,12}$/.test(str(card.id)) ||
+        !L.Favorite || typeof L.Favorite.add!=='function') return false;
+    var choices=[card.name,card.title,card.original_name,card.original_title];
+    var title='';
+    for (var i=0;i<choices.length;i++) {
+      var label=str(choices[i]);
+      if (label && !/^(unknown|undefined|null)$/i.test(label)) {
+        title=label;break;
+      }
+    }
+    if (!title) return false;
+    var display=str(card.name || card.title);
+    var clean=card;
+    if (!display || /^(unknown|undefined|null)$/i.test(display)) {
+      clean={};
+      Object.keys(card).forEach(function(key){clean[key]=card[key];});
+      if (card.original_name || card.first_air_date || card.number_of_seasons)
+        clean.name=title;
+      else clean.title=title;
+    }
+    try {L.Favorite.add('history',clean,100);return true;}
+    catch(ignore){return false;}
+  }
   function openFastTorrentFiles(card,rec,hash,files) {
     if (!files || files.length<2 ||
       !L.Modal || typeof L.Modal.open!=='function' ||
@@ -1794,8 +1821,9 @@
           staged={file:el,card:card,at:Date.now()};
           var phase='history';
           try {
-            if(L.Favorite && typeof L.Favorite.add==='function' && card.id)
-              L.Favorite.add('history',card,100);
+            // The fast picker must keep the same native CUB history hook as Lampa.
+            // A malformed placeholder is not a valid history entry.
+            recordNativeHistory(card);
             phase='play';
             L.Player.play(el);
             phase='callback';
