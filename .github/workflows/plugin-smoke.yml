@@ -30,6 +30,8 @@ jobs:
         run: node tests/plugin_smoke.js
       - name: Cloud card and TorrServer resume
         run: node tests/resume_smoke.js
+      - name: Torrent preload / external-player launch safety
+        run: node tests/torrent_preload_smoke.js
       - name: Cold TorrServer metadata / single-click retries
         run: node tests/torrent_resume_retry_smoke.js
       - name: Automatic preceding-episode completion (without timecodes)

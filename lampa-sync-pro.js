@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.21-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.22-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.21';
+  var VERSION = '0.1.22';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -1774,6 +1774,117 @@
     try {L.Favorite.add('history',clean,100);return true;}
     catch(ignore){return false;}
   }
+
+  // Keep the fast file picker; only gate its Player.play() behind the
+  // same TorrServer preload/stat handshake used by native Lampa.
+  var fastTorrentPreloadJob=null;
+  function cancelFastTorrentPreload(){
+    if(fastTorrentPreloadJob)fastTorrentPreloadJob.cancel();
+  }
+  function preloadFastTorrentStream(data,onReady,onError){
+    function fail(code){if(typeof onError==='function')onError(code);}
+    var url=str(data && data.url);
+    var hash=str(data && data.torrent_hash);
+    var id=Number(data && data.id);
+    if(STOPPED || !/^https?:\/\//i.test(url) ||
+       !/^([0-9a-f]{40}|[a-z2-7]{32})$/i.test(hash) ||
+       !isFinite(id) || id<0 || Math.floor(id)!==id){
+      fail('invalid_file');return;
+    }
+    var preloadEnabled=false;
+    try{preloadEnabled=!!(L.Storage && L.Storage.field &&
+      L.Storage.field('torrserver_preload'));}catch(ignore){}
+    var needsPreload=preloadEnabled && /[?&]preload(?:&|$)/.test(url);
+    // TorrServer's GStreamer/HLS URL and disabled preload use native play.
+    if(!needsPreload){onReady();return;}
+    var server='';
+    try{server=str(L.Torserver && L.Torserver.url &&
+      L.Torserver.url()).replace(/\/+$/,'');}catch(ignore){}
+    var link=/[?&]link=([^&]+)/.exec(url);
+    var index=/[?&]index=(\d+)(?:&|$)/.exec(url);
+    if(!server || url.indexOf(server+'/')!==0 || !link || !index ||
+       Number(index[1])!==id ||
+       decodeURIComponent(link[1]).toUpperCase()!==hash.toUpperCase()){
+      fail('server_or_file_changed');return;
+    }
+    if(typeof L.Reguest!=='function' || !L.Loading ||
+       typeof L.Loading.start!=='function' ||
+       typeof L.Loading.stop!=='function' ||
+       typeof L.Loading.setProgress!=='function'){
+      fail('preload_unavailable');return;
+    }
+    cancelFastTorrentPreload();
+    var network;
+    try{network=new L.Reguest();}catch(ignore){fail('preload_unavailable');return;}
+    var start=Date.now(), lastChange=start, lastBytes=0, errors=0;
+    var first=true, timer=null, job={done:false};
+    function isSameServer(){
+      if(STOPPED)return false;
+      try{return str(L.Torserver.url()).replace(/\/+$/,'')===server &&
+        !!L.Storage.field('torrserver_preload');}
+      catch(ignore){return false;}
+    }
+    function finish(reason){
+      if(job.done)return;
+      job.done=true;
+      if(fastTorrentPreloadJob===job)fastTorrentPreloadJob=null;
+      if(timer!==null){clearTimeout(timer);timer=null;}
+      try{if(network && network.clear)network.clear();}catch(ignore){}
+      try{L.Loading.stop();}catch(ignore){}
+      if(!reason)onReady();
+      else fail(reason);
+    }
+    job.cancel=function(){finish('cancelled');};
+    fastTorrentPreloadJob=job;
+    try{L.Loading.start(job.cancel,'',{media:data});}
+    catch(ignore){finish('preload_unavailable');return;}
+    function next(){
+      if(job.done)return;
+      var now=Date.now();
+      if(now-start>60000 || now-lastChange>30000){
+        finish('timeout');return;
+      }
+      timer=setTimeout(poll,1000);
+    }
+    function poll(){
+      if(job.done)return;
+      if(!isSameServer()){finish('server_or_file_changed');return;}
+      if(Date.now()-start>60000){finish('timeout');return;}
+      var requestUrl=first?url:url.replace(/([?&])preload(?=&|$)/,'$1stat');
+      first=false;
+      try{
+        network.timeout(3500);
+        network.silent(requestUrl,function(response){
+          if(job.done)return;
+          if(!isSameServer()){finish('server_or_file_changed');return;}
+          errors=0;
+          var pb=Number(response && response.preloaded_bytes);
+          var ps=Number(response && response.preload_size);
+          var speed=Number(response && response.download_speed);
+          var validSize=isFinite(ps)&&ps>0&&isFinite(pb)&&pb>=0;
+          var percent=validSize?Math.max(0,Math.min(100,pb*100/ps)):0;
+          if(validSize && percent>=95){finish('');return;}
+          if(validSize && pb>lastBytes){lastBytes=pb;lastChange=Date.now();}
+          var speedText='0';
+          try{if(isFinite(speed)&&speed>0&&L.Utils&&L.Utils.bytesToSize)
+            speedText=L.Utils.bytesToSize(speed*8,true);}catch(ignore){}
+          try{L.Loading.setProgress(percent,{
+            speed:speedText,
+            active_peers:Math.max(0,parseInt(response && response.active_peers,10)||0),
+            total_peers:Math.max(0,parseInt(response && response.total_peers,10)||0)
+          });}catch(ignore){}
+          next();
+        },function(){
+          if(job.done)return;
+          errors++;
+          if(errors>=3)finish('request_failed');
+          else next();
+        });
+      }catch(ignore){finish('request_failed');}
+    }
+    poll();
+  }
+
   function openFastTorrentFiles(card,rec,hash,files) {
     if (!files || files.length<2 ||
       !L.Modal || typeof L.Modal.open!=='function' ||
@@ -1795,7 +1906,7 @@
       return normalized(a).localeCompare(normalized(b));
     });
     var params={movie:card,files:entries},playlist=[],rows=[],modalOpened=false;
-    var enrichmentClosed=false;
+    var enrichmentClosed=false,activeLaunch=null,lastReadyPreload=null;
     var recipe=rec.source_recipe || {},checkpoint=str(rec.episode_key).match(/^s(\d+):e(\d+)$/);
     var desiredIndex=Number(recipe.file_index),desiredPath=normalPath(recipe.file_path);
     var watched=rec.watched_state==='completed';
@@ -1879,6 +1990,7 @@
       var empty=win.$('<div class="torrent-files"></div>');
       L.Modal.open({title:'Файлы торрента',html:empty,size:'large',mask:true,
         onBack:function(){
+          cancelFastTorrentPreload();activeLaunch=null;
           finishResumeLoading();
           enrichmentClosed=true;
           L.Modal.close();
@@ -1901,30 +2013,59 @@
         var row=x.item,el=x.file;
         el.playlist=playlist;
         row.on('hover:enter',function(){
-          enrichmentClosed=true;
-          staged={file:el,card:card,at:Date.now()};
-          var phase='history';
-          try {
-            // The fast picker must keep the same native CUB history hook as Lampa.
-            // A malformed placeholder is not a valid history entry.
-            recordNativeHistory(card);
-            phase='play';
-            L.Player.play(el);
-            phase='callback';
-            if(typeof L.Player.callback==='function')
-              L.Player.callback(function(){L.Controller.toggle('modal');});
-            phase='playlist';
-            L.Player.playlist(playlist);
-            phase='event';
-            L.Listener.send('torrent_file',{type:'onenter',element:el,item:row,
-              items:entries,params:params});
-          }catch(error){
-            // Do not expose stream URLs or tokens through diagnostics.
-            try { if(win.console && win.console.warn)
-              win.console.warn('[Lampa Sync Pro] Episode launch failed:',error && error.name || 'error'); }
-            catch(ignore){}
-            note('Не удалось открыть выбранную серию ('+phase+')');
-          }
+          if(STOPPED)return;
+          if(L.Modal && typeof L.Modal.opened==='function' &&
+             L.Modal.opened()===false)return;
+          if(lastReadyPreload && lastReadyPreload.file===el &&
+             Date.now()-lastReadyPreload.at<1500)return;
+          if(activeLaunch && activeLaunch.file===el)return;
+          if(activeLaunch)cancelFastTorrentPreload();
+          var launch={file:el};
+          activeLaunch=launch;
+          preloadFastTorrentStream(el,function(){
+            if(STOPPED || activeLaunch!==launch)return;
+            activeLaunch=null;
+            var usedPreload=false;
+            try{usedPreload=!!(L.Storage.field('torrserver_preload') &&
+              /[?&]preload(?:&|$)/.test(el.url));}catch(ignore){}
+            if(usedPreload)lastReadyPreload={file:el,at:Date.now()};
+            enrichmentClosed=true;
+            staged={file:el,card:card,at:Date.now()};
+            var phase='history';
+            try{
+              // Preload never marks watched: native history is recorded only
+              // after the selected stream is ready for the actual player.
+              recordNativeHistory(card);
+              phase='play';
+              L.Player.play(el);
+              phase='callback';
+              if(typeof L.Player.callback==='function')
+                L.Player.callback(function(){L.Controller.toggle('modal');});
+              phase='playlist';
+              L.Player.playlist(playlist);
+              phase='event';
+              L.Listener.send('torrent_file',{type:'onenter',element:el,item:row,
+                items:entries,params:params});
+            }catch(error){
+              enrichmentClosed=false;
+              try{if(win.console && win.console.warn)
+                win.console.warn('[Lampa Sync Pro] Episode launch failed:',
+                  error && error.name || 'error');}catch(ignore){}
+              note('Не удалось открыть выбранную серию ('+phase+')');
+            }
+          },function(reason){
+            if(activeLaunch!==launch)return;
+            activeLaunch=null;
+            if(reason==='cancelled')return;
+            var messages={
+              invalid_file:'Некорректный файл торрента',
+              server_or_file_changed:'TorrServer изменился или файл недоступен',
+              preload_unavailable:'Предзагрузка недоступна в этой сборке Lampa',
+              timeout:'TorrServer не подготовил поток за отведённое время',
+              request_failed:'Ошибка связи с TorrServer во время подготовки'
+            };
+            note(messages[reason] || 'Не удалось подготовить поток TorrServer');
+          });
         });
         row.on('hover:focus',function(){
           L.Listener.send('torrent_file',{type:'onfocus',element:el,item:row,
@@ -2051,6 +2192,7 @@
       // Never leave a blank fast picker on an exceptional WebView: close our
       // own modal before falling back to the original Lampa selector.
       if(modalOpened){
+        cancelFastTorrentPreload();activeLaunch=null;
         enrichmentClosed=true;
         try{L.Modal.close();}catch(ignore){}
         try{L.Listener.send('torrent_file',{type:'list_close'});}catch(ignore){}
@@ -2364,6 +2506,7 @@
     sync(false);
   }
   function destroy() {
+    cancelFastTorrentPreload();
     finishResumeLoading();
     STOPPED=true;
     realtimeStop();
