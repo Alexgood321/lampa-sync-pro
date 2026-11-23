@@ -34,3 +34,44 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -d "$payload" \
             "https://api.github.com/repos/Alexgood321/store/dispatches"
+
+      # The POST above accepts a dispatch but does not guarantee the central
+      # workflow will run. Sync directly as an independent delivery path.
+      - name: Checkout My Store catalog
+        uses: actions/checkout@v4
+        with:
+          repository: Alexgood321/store
+          ref: main
+          token: ${{ secrets.STORE_DISPATCH_TOKEN }}
+          path: _my_store_catalog
+          persist-credentials: true
+      - name: Verify and publish catalog directly
+        working-directory: _my_store_catalog
+        env:
+          GH_TOKEN: ${{ secrets.STORE_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            python3 scripts/sync_catalog.py
+            git add live_catalog.json
+            if git diff --cached --quiet; then
+              echo "My Store catalog already current"
+              exit 0
+            fi
+            git commit -m "chore(catalog): sync verified plugin revisions after source push"
+            if git push origin HEAD:main; then
+              curl --fail --silent --show-error --retry 2 --max-time 15 \
+                'https://purge.jsdelivr.net/gh/Alexgood321/store@main/live_catalog.json' \
+                || echo "::warning::jsDelivr purge failed; raw catalog is primary"
+              echo "My Store catalog published"
+              exit 0
+            fi
+            echo "::warning::Concurrent catalog change (attempt $attempt); retrying"
+            sleep 3
+          done
+          echo "::error::Central catalog update failed after five retries"
+          exit 1
