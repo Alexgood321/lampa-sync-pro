@@ -1,4 +1,4 @@
-/* Lampa Sync Pro 0.1.22-alpha | https://github.com/Alexgood321/lampa-sync-pro
+/* Lampa Sync Pro 0.1.23-alpha | https://github.com/Alexgood321/lampa-sync-pro
  * Supabase Auth + transactional RPC. Torrent-only capture and guarded resume.
  * Does not modify CUB, Trakt, HDRezka/Netlify or native history during bootstrap.
  */
@@ -12,7 +12,7 @@
 
   var Lampa = win.Lampa;
   var L = Lampa;
-  var VERSION = '0.1.22';
+  var VERSION = '0.1.23';
   var CHANNEL = 'alpha';
   var BASE = 'https://kkrmivgrnfqauvplccqm.supabase.co';
   var KEY = 'sb_publishable_mpmJzdr8DZM4kukXPAdKmw_6YDWl2VH';
@@ -22,6 +22,7 @@
   var subscriptions = [], sendTimer = null;
   var networkBusy = false, refreshing = false, refreshWaiters = [];
   var lastSuccessfulSync = 0;
+  var recoveryWritePending = false;
   var retryAfter = 0, active = null, staged = null, currentFull = null;
   var lastTorrent = null, torrPoll = null, torrStatus = 'not_checked';
   var torrentResumeJob = null, torrentFocusJob = null;
@@ -134,6 +135,10 @@
     state.outbox = Array.isArray(s.outbox) ? s.outbox.filter(function (e) {
       return e && e.schema === 1 && validUUID(e.event_id) && validUUID(e.device_id);
     }).slice(-750) : [];
+    state.outbox.forEach(function(e) {
+      var seq=Number(e.device_seq);
+      if(isSafeSeq(seq) && seq>state.seq)state.seq=seq;
+    });
     if (!state.auth || !state.userId) { state.auth = null; state.userId = ''; state.outbox = []; state.snapshot = null; state.revision = 0; state.lastTorrent=null; state.lastPlayback=null; }
   }
   function request(method, path, payload, token, done) {
@@ -159,6 +164,7 @@
         var err = new Error('HTTP ' + xhr.status);
         err.status = xhr.status;
         err.code = parsed && (parsed.code || parsed.error_code || parsed.error) || 'request_failed';
+        err.serverMessage = str(parsed && parsed.message).slice(0,120);
         finish(err);
       };
       xhr.onerror = function () { finish(new Error('network_error')); };
@@ -804,6 +810,137 @@
       if (e.base_revision === startAt && sessions[key]) e.base_revision = revision;
     });
   }
+
+  // Only server-confirmed event IDs may be removed from a stranded queue.
+  // Repair never creates new event IDs, drops unconfirmed events, changes
+  // playback progress or rewrites base_revision (conflict/OCC semantics).
+  function isSafeSeq(n) {
+    return typeof n==='number' && isFinite(n) &&
+      n>=0 && Math.floor(n)===n && n<=9007199254740990;
+  }
+  function syncFailureDescription(err) {
+    var message=str(err && err.serverMessage);
+    var failures={
+      device_sequence_conflict:'конфликт номеров событий устройства',
+      invalid_event_identity:'некорректная последовательность событий',
+      invalid_event_schema:'некорректный формат события',
+      invalid_media_identity:'некорректный идентификатор фильма или серии',
+      invalid_playback_data:'некорректный таймкод воспроизведения',
+      invalid_batch:'сервер отклонил пакет событий'
+    };
+    if(failures[message])return failures[message]+' ('+message+')';
+    return str(err && (err.code || err.message) || 'request_failed').slice(0,70);
+  }
+  function persistRecoveredQueue(done) {
+    var finished=false, value=snapshotState();
+    recoveryWritePending=true;
+    function finish(err) {
+      if(finished)return;
+      finished=true;
+      if(!err)recoveryWritePending=false;
+      done(err||null);
+    }
+    if(db){
+      try{
+        var transaction=db.transaction(['kv'],'readwrite');
+        transaction.oncomplete=function(){finish(null);};
+        transaction.onerror=function(){finish(new Error('queue_persistence_failed'));};
+        transaction.onabort=function(){finish(new Error('queue_persistence_failed'));};
+        transaction.objectStore('kv').put(value,'state');
+        return;
+      }catch(ignore){finish(new Error('queue_persistence_failed'));return;}
+    }
+    try{win.localStorage.setItem(STORE_KEY,JSON.stringify(value));finish(null);}
+    catch(ignore){finish(new Error('queue_persistence_failed'));}
+  }
+  function recoverSequenceConflict(owner,done) {
+    if(STOPPED || owner!==state.userId)return done(new Error('account_changed'));
+    var device=state.deviceId;
+    if(!validUUID(device) || !state.auth)return done(new Error('queue_identity_missing'));
+    if(state.outbox.some(function(e){return e.device_id!==device || !validUUID(e.event_id);}))
+      return done(new Error('queue_device_mismatch'));
+    token(function(err,jwt){
+      if(STOPPED || owner!==state.userId || device!==state.deviceId)
+        return done(new Error('account_changed'));
+      if(err)return done(err);
+      request('GET','/rest/v1/lsp_devices?select=device_id,last_seq&device_id=eq.'+
+        device+'&limit=1',undefined,jwt,function(error,rows){
+        if(STOPPED || owner!==state.userId || device!==state.deviceId)
+          return done(new Error('account_changed'));
+        if(error)return done(error);
+        if(!Array.isArray(rows) || rows.length>1)
+          return done(new Error('invalid_server_device_state'));
+        if(rows.length && (rows[0].device_id!==device ||
+          rows[0].last_seq===null || rows[0].last_seq===undefined ||
+          rows[0].last_seq==='' || !isSafeSeq(Number(rows[0].last_seq))))
+          return done(new Error('invalid_server_device_state'));
+        var lastSeq=rows.length?Number(rows[0].last_seq):0;
+        // Query accepted IDs in small chunks to fit Safari/WebView URL limits.
+        var pending=state.outbox.filter(function(e){return e.device_id===device;});
+        var ids=pending.map(function(e){return e.event_id;});
+        var accepted={};
+        function scan(offset){
+          if(STOPPED || owner!==state.userId || device!==state.deviceId)
+            return done(new Error('account_changed'));
+          if(offset>=ids.length)return commit();
+          var chunk=ids.slice(offset,offset+20);
+          request('GET','/rest/v1/lsp_sync_events?select=event_id&device_id=eq.'+
+            device+'&event_id=in.('+chunk.join(',')+')&limit=20',
+            undefined,jwt,function(e,records){
+            if(STOPPED || owner!==state.userId || device!==state.deviceId)
+              return done(new Error('account_changed'));
+            if(e)return done(e);
+            if(!Array.isArray(records))
+              return done(new Error('invalid_server_event_state'));
+            for(var j=0;j<records.length;j++){
+              var id=str(records[j] && records[j].event_id);
+              if(chunk.indexOf(id)<0)return done(new Error('invalid_server_event_state'));
+              accepted[id]=true;
+            }
+            scan(offset+chunk.length);
+          });
+        }
+        function commit(){
+          if(STOPPED || owner!==state.userId || device!==state.deviceId)
+            return done(new Error('account_changed'));
+          var before=state.outbox.length, next=lastSeq, changed=false;
+          var kept=[],overflow=false,badIdentity=false;
+          state.outbox.forEach(function(event){
+            if(event.device_id!==device || !validUUID(event.event_id)){
+              badIdentity=true;return;
+            }
+            if(accepted[event.event_id]){changed=true;return;}
+            // Build new event objects; never mutate or discard an event
+            // before validating the entire recovered queue.
+            var old=Number(event.device_seq);
+            next=Math.max(next+1,isSafeSeq(old)?old:1);
+            if(!isSafeSeq(next) || next>9007199254740990){
+              overflow=true;return;
+            }
+            var copy={};
+            Object.keys(event).forEach(function(key){copy[key]=event[key];});
+            if(old!==next){copy.device_seq=next;changed=true;}
+            kept.push(copy);
+          });
+          if(badIdentity)return done(new Error('queue_device_mismatch'));
+          if(overflow)return done(new Error('device_sequence_overflow'));
+          if(kept.length!==before)changed=true;
+          state.outbox=kept;
+          if(state.seq<lastSeq){state.seq=lastSeq;changed=true;}
+          if(kept.length && state.seq<next){state.seq=next;changed=true;}
+          if(!changed)return done(new Error('sequence_recovery_no_change'));
+          // Do not send the repaired queue until IndexedDB commits.
+          persistRecoveredQueue(function(saveErr){
+            if(saveErr)return done(saveErr);
+            done(null,{recovered:kept.length,deduplicated:before-kept.length,
+              lastSeq:lastSeq});
+          });
+        }
+        scan(0);
+      });
+    });
+  }
+
   function readSnapshot(done,owner) {
     rpc('lsp_sync_snapshot',{},function(err,data) {
       if (owner !== state.userId) return done(new Error('account_changed'));
@@ -811,19 +948,36 @@
       done(err,data);
     });
   }
-  function flushQueue(done,owner) {
+  function flushQueue(done,owner,recoveryCount,revisionRetries) {
     if (owner !== state.userId) return done(new Error('account_changed'));
+    if (recoveryWritePending) return persistRecoveredQueue(function(err){
+      if(err)return done(err);
+      flushQueue(done,owner,recoveryCount,revisionRetries);
+    });
     if (!state.outbox.length) return done(null);
     var batch = state.outbox.slice(0,50);
     var base = state.revision;
     rpc('lsp_sync_push',{p_events:batch,p_expected_revision:base},function(err,data) {
       if (owner !== state.userId) return done(new Error('account_changed'));
+      if (err && err.code==='P0001' &&
+          err.serverMessage==='device_sequence_conflict' &&
+          (recoveryCount||0)<2) {
+        return recoverSequenceConflict(owner,function(recoverErr,info){
+          if(recoverErr)return done(recoverErr);
+          if(info && info.deduplicated)
+            note('Подтверждено в облаке: '+info.deduplicated+
+              '; восстановлена очередь: '+info.recovered);
+          flushQueue(done,owner,(recoveryCount||0)+1,revisionRetries||0);
+        });
+      }
       if (err) return done(err);
       if (!data) return done(new Error('empty_push_response'));
       if (data.status==='conflict') {
+        if ((revisionRetries||0)>=3) return done(new Error('revision_conflict_retry_limit'));
         state.revision = Math.max(0,Math.floor(number(data.revision)));
         save();
-        return flushQueue(done,owner); // A stale base_revision is intentionally NOT rebased here.
+        return flushQueue(done,owner,recoveryCount||0,(revisionRetries||0)+1);
+        // Deliberately preserve each event's original base_revision.
       }
       if (data.status!=='ok') return done(new Error('unexpected_push_response'));
       if (number(data.ignored)>0) note('Часть устаревших изменений пропущена: ' + data.ignored);
@@ -831,7 +985,7 @@
       state.revision = Math.max(0,Math.floor(number(data.revision)));
       rebaseRemainder(base,state.revision,batch,number(data.ignored));
       save();
-      flushQueue(done,owner);
+      flushQueue(done,owner,recoveryCount||0,0);
     });
   }
   function sync(userInitiated, skipTorrRead) {
@@ -863,7 +1017,7 @@
       networkBusy = false;
       if (err) {
         retryAfter = Date.now()+45000;
-        if (userInitiated) note('Сеть или API недоступны (' + str(err.code || err.message).slice(0,40) + ')');
+        if (userInitiated) note('Ошибка синхронизации: '+syncFailureDescription(err));
       } else {
         retryAfter = 0;
         lastSuccessfulSync = Date.now();
